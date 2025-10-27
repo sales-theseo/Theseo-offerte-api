@@ -4,7 +4,7 @@ import puppeteer from 'puppeteer-core';
 
 export const config = { runtime: 'nodejs' };
 
-/* ===== CORS helper ===== */
+/* ---------- CORS helpers ---------- */
 function setCors(res){
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -12,21 +12,21 @@ function setCors(res){
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
 }
 
-/* ===== Body parser for Vercel Node functions ===== */
+/* ---------- Safe JSON body parse (Vercel Node) ---------- */
 async function readJsonBody(req){
+  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length) return req.body;
   return new Promise((resolve) => {
     let data = '';
     req.on('data', chunk => { data += chunk; });
     req.on('end', () => {
       if (!data) return resolve({});
-      try { resolve(JSON.parse(data)); }
-      catch { resolve({}); }
+      try { resolve(JSON.parse(data)); } catch { resolve({}); }
     });
     req.on('error', () => resolve({}));
   });
 }
 
-/* ===== Handler ===== */
+/* ---------- Handler ---------- */
 export default async function handler(req, res) {
   try {
     // Preflight
@@ -40,16 +40,26 @@ export default async function handler(req, res) {
       return res.status(405).send('Method Not Allowed');
     }
 
-    // IMPORTANT: parse body manually
-    const body = req.body && Object.keys(req.body).length ? req.body : await readJsonBody(req);
+    // Parse body
+    const body = await readJsonBody(req);
     const { payload } = body || {};
     if (!payload) {
       setCors(res);
       return res.status(400).send('Bad Request: missing payload');
     }
 
+    // Render
     const html = buildHTML(payload);
-    const pdfBuffer = await renderPDF(html);
+
+    let pdfBuffer;
+    try {
+      pdfBuffer = await renderPDF(html);
+    } catch (e) {
+      console.error('renderPDF failed:', e);
+      setCors(res);
+      // Geef de echte error terug zodat je hem in de browser ziet
+      return res.status(500).send(`PDF error: ${e?.message || e}`);
+    }
 
     const today = new Date().toLocaleDateString('nl-NL').replace(/\//g, '-');
 
@@ -60,13 +70,13 @@ export default async function handler(req, res) {
 
     return res.status(200).send(pdfBuffer);
   } catch (e) {
-    console.error('PDF error', e);
+    console.error('Top-level error:', e);
     setCors(res);
-    return res.status(500).send('PDF error');
+    return res.status(500).send(`PDF error: ${e?.message || e}`);
   }
 }
 
-/* ===== HTML (Theseo stijl) ===== */
+/* ---------- HTML (Theseo stijl) ---------- */
 function buildHTML(data){
   const { contact = {}, totals = {}, lines = [] } = data;
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
@@ -181,24 +191,37 @@ function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
 }
 
-/* ===== Puppeteer rendering ===== */
+/* ---------- Puppeteer rendering ---------- */
 async function renderPDF(html){
-  const exePath = await chromium.executablePath;
+  // Sparticuz: expliciete modes (soms helpt dit tegen 500)
+  chromium.setHeadlessMode = true;
+  chromium.setGraphicsMode = false;
+
+  // Sommige versies exporteren executablePath als functie; fallback naar property
+  const execPath = typeof chromium.executablePath === 'function'
+    ? await chromium.executablePath()
+    : await chromium.executablePath;
+
   const browser = await puppeteer.launch({
     args: [
       ...chromium.args,
-      '--font-render-hinting=medium',
-      '--disable-web-security'
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--font-render-hinting=medium'
     ],
-    defaultViewport: { width: 1123, height: 794, deviceScaleFactor: 2 },
-    executablePath: exePath,
+    defaultViewport: chromium.defaultViewport || { width: 1123, height: 794, deviceScaleFactor: 2 },
+    executablePath: execPath,
     headless: chromium.headless
   });
 
   try{
     const page = await browser.newPage();
     await page.emulateMediaType('screen');
-    await page.setContent(html, { waitUntil: ['domcontentloaded','networkidle0'] });
+
+    // Gebruik data-URL: dit is vaak stabieler dan setContent i.c.m. externe fonts
+    const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+    await page.goto(dataUrl, { waitUntil: ['load', 'networkidle0'] });
+
     const pdf = await page.pdf({
       format: 'A4',
       printBackground: true,
