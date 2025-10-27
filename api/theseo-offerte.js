@@ -1,73 +1,78 @@
+// api/theseo-offerte.js
 import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
 
-export const config = {
-  runtime: 'nodejs',
-  memory: 1024,
-  maxDuration: 20,
-};
+export const config = { runtime: 'nodejs', memory: 1024, maxDuration: 20 };
 
-export const config = { runtime: 'nodejs' };
-
-function setCors(res){
-  res.setHeader('Access-Control-Allow-Origin', '*');
+/* ---------- CORS helpers ---------- */
+function setCors(res, origin = '*') {
+  res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+  res.setHeader('Vary', 'Origin');
+}
+function ok(res, buf, filename) {
+  setCors(res, '*');                         // of zet hier 'https://theseo.nl'
+  if (buf) {
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).send(buf);
+  }
+  return res.status(200).end();
 }
 
-async function readJsonBody(req){
-  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length) return req.body;
-  return new Promise((resolve) => {
-    let data = '';
-    req.on('data', c => { data += c; });
-    req.on('end', () => { try { resolve(JSON.parse(data||'{}')); } catch { resolve({}); } });
-    req.on('error', () => resolve({}));
-  });
+/* ---------- Body parser voor Vercel Node ---------- */
+async function readJsonBody(req) {
+  if (req.body && typeof req.body === 'object') return req.body;
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const raw = Buffer.concat(chunks).toString('utf8') || '{}';
+  try { return JSON.parse(raw); } catch { return {}; }
 }
 
-export default async function handler(req, res){
-  try{
-    if (req.method === 'OPTIONS'){ setCors(res); return res.status(204).end(); }
-    if (req.method !== 'POST'){ setCors(res); return res.status(405).send('Method Not Allowed'); }
-
-    const body = await readJsonBody(req);
-    const { payload } = body || {};
-    if (!payload){ setCors(res); return res.status(400).send('Bad Request: missing payload'); }
-
-    const html = buildHTML(payload);
-
-    let pdfBuffer;
-    try {
-      pdfBuffer = await renderPDF(html);
-    } catch (e) {
-      console.error('renderPDF failed', e);
-      setCors(res);
-      // expose a helpful error up to the client so we can debug quickly
-      return res.status(500).send(`PDF error: ${e?.message || e}`);
+/* ---------- Handler ---------- */
+export default async function handler(req, res) {
+  try {
+    // 1) Preflight CORS: snel terug met 204
+    if (req.method === 'OPTIONS') {
+      setCors(res, '*');                      // of 'https://theseo.nl'
+      res.setHeader('Access-Control-Max-Age', '86400');
+      return res.status(204).end();
     }
 
-    const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
-    setCors(res);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=theseo-offerte-${today}.pdf`);
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(200).send(pdfBuffer);
-  }catch(e){
-    console.error('Top-level error', e);
-    setCors(res);
+    if (req.method !== 'POST') {
+      setCors(res, '*');
+      return res.status(405).send('Method Not Allowed');
+    }
+
+    const { payload } = await readJsonBody(req);
+    if (!payload) {
+      setCors(res, '*');
+      return res.status(400).send('Bad Request: missing payload');
+    }
+
+    const html = buildHTML(payload);
+    const pdfBuffer = await renderPDF(html);
+
+    const today = new Date().toLocaleDateString('nl-NL').replace(/\//g, '-');
+    return ok(res, pdfBuffer, `theseo-offerte-${today}.pdf`);
+  } catch (e) {
+    console.error('PDF error', e);
+    setCors(res, '*');
     return res.status(500).send(`PDF error: ${e?.message || e}`);
   }
 }
 
-/* ==== Theseo HTML kept the same as your last version ==== */
-function buildHTML(data){
+/* ---------- HTML (jouw layout) ---------- */
+function buildHTML(data) {
   const { contact = {}, totals = {}, lines = [] } = data;
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
-    .map(([l,r])=>`
+    .map(([l, r]) => `
       <tr>
-        <td class="col-l">${escapeHtml(l||'')}</td>
-        <td class="col-r">${escapeHtml(r||'')}</td>
+        <td class="col-l">${escapeHtml(l || '')}</td>
+        <td class="col-r">${escapeHtml(r || '')}</td>
       </tr>`).join('');
 
   const logo = "https://ek68sppdjsi.exactdn.com/wp-content/uploads/2025/06/THESEAO_LOGO_FIXED-1024x552.png?strip=all&lossy=1&sharp=1&ssl=1";
@@ -76,14 +81,14 @@ function buildHTML(data){
   const brand= "#1652F0";
   const today= new Date().toLocaleDateString('nl-NL');
 
-  return `
-<!DOCTYPE html><html lang="nl"><head>
+  return `<!DOCTYPE html><html lang="nl"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Offerte – TheSEO</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 <style>
 :root{--bg:${bg};--text:#fff;--muted:#AFC3DE;--grid:${grid};--brand:${brand};--radius:16px;}
-*{box-sizing:border-box} html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
 .page{width:794px;min-height:1123px;padding:36px 42px;position:relative;}
 header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
 .logo img{height:36px;width:auto;display:block;image-rendering:-webkit-optimize-contrast;}
@@ -137,13 +142,12 @@ table.spec{width:100%;border-collapse:separate;border-spacing:0;margin-top:18px;
 </section>
 </div></body></html>`;
 }
-
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
 }
 
+/* ---------- Puppeteer/Chromium voor Vercel ---------- */
 async function renderPDF(html){
-  // Ensure Sparticuz runs in Lambda/Vercel properly
   chromium.setHeadlessMode = true;
   chromium.setGraphicsMode = false;
 
@@ -151,9 +155,7 @@ async function renderPDF(html){
     ? await chromium.executablePath()
     : await chromium.executablePath;
 
-  if (!execPath) {
-    throw new Error('Chromium executablePath not resolved');
-  }
+  if (!execPath) throw new Error('Chromium executablePath not resolved');
 
   const browser = await puppeteer.launch({
     args: [
