@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "functions": {
+    "api/theseo-offerte.js": {
+      "runtime": "nodejs",
+      "memory": 1536,
+      "maxDuration": 60
+    }
+  }
+}
