@@ -2,7 +2,7 @@
 import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
 
-export const config = { runtime: 'nodejs18.x' };
+export const config = { runtime: 'nodejs' };
 
 /** Classic Node handler (req, res) is stabiel voor Puppeteer op Vercel */
 export default async function handler(req, res) {
