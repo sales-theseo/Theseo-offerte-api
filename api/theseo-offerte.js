@@ -2,37 +2,47 @@
 import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
 
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: 'nodejs18.x' };
 
-export default async function handler(req) {
+/** Classic Node handler (req, res) is stabiel voor Puppeteer op Vercel */
+export default async function handler(req, res) {
   try {
-    if (req.method !== 'POST') {
-      return new Response('Method Not Allowed', { status: 405 });
+    // CORS preflight
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      return res.status(200).end();
     }
 
-    const { payload } = await req.json();
-    if (!payload) return new Response('Bad Request', { status: 400 });
+    if (req.method !== 'POST') {
+      return res.status(405).send('Method Not Allowed');
+    }
+
+    const { payload } = req.body || {};
+    if (!payload) {
+      return res.status(400).send('Bad Request');
+    }
 
     const html = buildHTML(payload);
     const pdfBuffer = await renderPDF(html);
 
-    const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
-    return new Response(pdfBuffer, {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename=theseo-offerte-${today}.pdf`,
-        'Cache-Control': 'no-store'
-        'Access-Control-Allow-Origin': '*'
-      }
-    });
+    const today = new Date().toLocaleDateString('nl-NL').replace(/\//g, '-');
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=theseo-offerte-${today}.pdf`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    return res.status(200).send(pdfBuffer);
   } catch (e) {
-    return new Response('PDF error', { status: 500 });
+    console.error('PDF error', e);
+    return res.status(500).send('PDF error');
   }
 }
 
 function buildHTML(data){
-  const { contact={}, totals={}, lines=[] } = data;
+  const { contact = {}, totals = {}, lines = [] } = data;
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
     .map(([l,r])=>`
       <tr>
@@ -149,18 +159,21 @@ function escapeHtml(s){
 }
 
 async function renderPDF(html){
-  const isEdge = true; // Vercel Edge/Serverless
+  // Sparticuz Chromium werkt in Vercel serverless
   const exePath = await chromium.executablePath;
   const browser = await puppeteer.launch({
-    args: chromium.args,
-    defaultViewport: { width: 1123, height: 794, deviceScaleFactor: 2 }, // retina crisp
+    args: [
+      ...chromium.args,
+      '--font-render-hinting=medium',
+      '--disable-web-security'
+    ],
+    defaultViewport: { width: 1123, height: 794, deviceScaleFactor: 2 },
     executablePath: exePath,
     headless: chromium.headless
   });
 
   try{
     const page = await browser.newPage();
-    // Font smoothing & color accuracy
     await page.emulateMediaType('screen');
     await page.setContent(html, { waitUntil: ['domcontentloaded','networkidle0'] });
 
