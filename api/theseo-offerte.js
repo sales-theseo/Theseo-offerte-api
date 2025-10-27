@@ -1,10 +1,15 @@
-// api/theseo-offerte.js  — v4 diag
+// api/theseo-offerte.js
+// Serverless PDF generator for Vercel (Node.js runtime, NOT Edge)
+// Requires package.json deps EXACTLY:
+//   "@sparticuz/chromium": "126.0.0"
+//   "puppeteer-core": "22.6.5"
+
 import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
 
 export const config = { runtime: 'nodejs' };
 
-const VERSION = 'v4-diag'; // ← wijzig dit elke deploy om te checken
+/* ----------------------------- HTTP HANDLER ----------------------------- */
 
 function setCors(res){
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -14,6 +19,7 @@ function setCors(res){
 }
 
 async function readJsonBody(req){
+  // Works for both Vercel serverless and plain Node streams
   if (req.body && typeof req.body === 'object' && Object.keys(req.body).length) return req.body;
   return new Promise((resolve) => {
     let data = '';
@@ -26,111 +32,182 @@ async function readJsonBody(req){
 export default async function handler(req, res){
   try{
     if (req.method === 'OPTIONS'){ setCors(res); return res.status(204).end(); }
-
-    // === PING: eenvoudige GET om te verifiëren welke versie live staat
-    if (req.method === 'GET'){
-      setCors(res);
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.status(200).send(`theseo-offerte ${VERSION} | node:${process.version} | chrome:${chromium.chromiumVersion||'unk'}`);
-    }
-
     if (req.method !== 'POST'){ setCors(res); return res.status(405).send('Method Not Allowed'); }
 
-    const body = await readJsonBody(req);
-    const { payload } = body || {};
+    const { payload } = await readJsonBody(req);
     if (!payload){ setCors(res); return res.status(400).send('Bad Request: missing payload'); }
 
     const html = buildHTML(payload);
-
-    // Debug headers
-    res.setHeader('X-Handler-Version', VERSION);
-    res.setHeader('X-Chromium-Version', chromium?.chromiumVersion || 'unknown');
-
-    let pdf;
-    try {
-      pdf = await renderPDF(html);
-    } catch (e) {
-      console.error('[theseo-offerte] renderPDF failed:', e?.stack || e);
-      setCors(res);
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.status(500).send('PDF error: ' + (e?.stack || e));
-    }
+    const pdfBuffer = await renderPDF(html);
 
     const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
-    const buf = Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
-
     setCors(res);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=theseo-offerte-${today}.pdf`);
     res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Content-Length', Buffer.byteLength(buf));
-    return res.status(200).end(buf);
+
+    return res.status(200).send(pdfBuffer);
   }catch(e){
-    console.error('[theseo-offerte] top-level error:', e?.stack || e);
+    console.error('PDF error', e);
     setCors(res);
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    return res.status(500).send('PDF error: ' + (e?.stack || e));
+    return res.status(500).send(String(e?.stack || e?.message || e));
   }
 }
 
-function buildHTML(data){
-  const { contact = {}, totals = {}, lines = [] } = data;
-  const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
-    .map(([l,r])=>`<tr><td class="l">${escapeHtml(l||'')}</td><td class="r">${escapeHtml(r||'')}</td></tr>`).join('');
-  const today= new Date().toLocaleDateString('nl-NL');
-  return `<!doctype html><html><head><meta charset="utf-8"><style>
-  :root{--bg:#0B0F16;--brand:#1652F0;--grid:#2D3750;--text:#fff}
-  *{box-sizing:border-box} html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial}
-  .p{width:794px;min-height:1123px;padding:36px 42px}
-  h1{margin:0 0 6px;font-size:18px}
-  .d{opacity:.9;font-size:12px;margin:8px 0 16px}
-  .c{border:1px solid rgba(255,255,255,.25);border-radius:16px;background:rgba(255,255,255,.06);padding:16px 18px;margin-bottom:14px}
-  .g{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-  .l{font-weight:700;opacity:.8;text-transform:uppercase;font-size:11px;margin-bottom:3px}
-  table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid var(--grid);border-radius:16px;overflow:hidden}
-  thead th{background:var(--brand);color:#fff;text-align:left;padding:10px 12px;font-weight:800}
-  td{padding:10px 12px;border-top:1px solid var(--grid)}
-  td.r{text-align:right;width:160px;border-left:1px solid var(--grid)}
-  tbody tr:nth-child(odd) td{background:rgba(255,255,255,.03)}
-  .t{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
-  .chip{border:1px solid rgba(255,255,255,.25);border-radius:16px;background:rgba(255,255,255,.06);padding:12px 14px}
-  .chip .l{margin:0 0 6px}
-  .f{font-size:11px;opacity:.8;margin-top:18px}
-  </style></head><body><div class="p">
-  <h1>theseo — offerte</h1><div class="d">datum ${today}</div>
-  <div class="c"><div class="g">
-    <div><div class="l">voornaam</div>${escapeHtml(contact.firstName||'-')}</div>
-    <div><div class="l">achternaam</div>${escapeHtml(contact.lastName||'-')}</div>
-    <div><div class="l">bedrijfsnaam</div>${escapeHtml(contact.company||'-')}</div>
-    <div><div class="l">email</div>${escapeHtml(contact.email||'-')}</div>
-  </div></div>
-  <table><thead><tr><th>omschrijving</th><th class="r">bedrag</th></tr></thead><tbody>${rows}</tbody></table>
-  <div class="t">
-    <div class="chip"><div class="l">maandelijks</div><div>${escapeHtml(totals.monthly||'€0')}</div></div>
-    <div class="chip"><div class="l">eenmalig</div><div>${escapeHtml(totals.onetime||'€0')}</div></div>
-    <div class="chip"><div class="l">totaal eerste maand</div><div>${escapeHtml(totals.grand||'€0')}</div></div>
-  </div>
-  <div class="f">alle bedragen exclusief btw. indicatie op basis van de geselecteerde opties</div>
-  </div></body></html>`;
-}
-const escapeHtml = s => String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
+/* ------------------------------ PDF RENDER ------------------------------ */
 
 async function renderPDF(html){
+  // Ensure Sparticuz runs correctly on Vercel
   chromium.setHeadlessMode = true;
   chromium.setGraphicsMode = false;
-  const execPath = typeof chromium.executablePath === 'function'
-    ? await chromium.executablePath()
-    : await chromium.executablePath;
+
+  const executablePath = await chromium.executablePath(); // MUST be called as a function
+
   const browser = await puppeteer.launch({
-    args: [...chromium.args,'--no-sandbox','--disable-setuid-sandbox','--single-process','--font-render-hinting=medium'],
+    executablePath,
+    headless: chromium.headless,
     defaultViewport: chromium.defaultViewport || { width: 1123, height: 794, deviceScaleFactor: 2 },
-    executablePath: execPath,
-    headless: chromium.headless
+    args: [
+      ...chromium.args,
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--single-process'
+    ]
   });
+
   try{
     const page = await browser.newPage();
     await page.emulateMediaType('screen');
-    await page.goto('data:text/html;charset=utf-8,' + encodeURIComponent(html), { waitUntil: ['load','networkidle0'] });
-    return await page.pdf({ format:'A4', printBackground:true, margin:{top:0,right:0,bottom:0,left:0}, preferCSSPageSize:true });
-  } finally { await browser.close(); }
+    await page.setContent(html, { waitUntil: ['domcontentloaded','networkidle0'] });
+    return await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      margin: { top: 0, right: 0, bottom: 0, left: 0 },
+      preferCSSPageSize: true
+    });
+  } finally {
+    await browser.close();
+  }
+}
+
+/* ------------------------------- TEMPLATE ------------------------------- */
+
+function buildHTML(data){
+  const { contact = {}, totals = {}, lines = [] } = data;
+
+  const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
+    .map(([l,r])=>`
+      <tr>
+        <td class="col-l">${escapeHtml(l||'')}</td>
+        <td class="col-r">${escapeHtml(r||'')}</td>
+      </tr>`).join('');
+
+  const logo = "https://ek68sppdjsi.exactdn.com/wp-content/uploads/2025/06/THESEAO_LOGO_FIXED-1024x552.png?strip=all&lossy=1&sharp=1&ssl=1";
+  const today= new Date().toLocaleDateString('nl-NL');
+
+  return `<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Offerte – TheSEO</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0A0F17;
+    --panel:#121A26;
+    --panel2:#0F1622;
+    --text:#FFFFFF;
+    --muted:#AFC3DE;
+    --grid:#2D3750;
+    --brand:#1652F0;
+    --accent:#7EF529;
+    --radius:16px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  .page{width:794px;min-height:1123px;padding:36px 42px;position:relative;}
+
+  /* header */
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+  .logo img{height:38px;width:auto;display:block;image-rendering:-webkit-optimize-contrast;}
+  .pill{border:1px solid rgba(255,255,255,.9);border-radius:999px;padding:8px 16px;font-weight:800;letter-spacing:.6px}
+  .date{margin-top:6px;font-size:12px;color:#EAF0FF}
+
+  /* contact card */
+  .card{border-radius:var(--radius);background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid rgba(255,255,255,0.2);padding:16px 18px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.06)}
+  .card .title{font-weight:800;letter-spacing:.3px;margin-bottom:8px}
+  .contact{margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13px}
+  .contact small{display:block;color:var(--muted);text-transform:uppercase;font-weight:800;letter-spacing:.4px;margin-bottom:4px;font-size:11px}
+  .contact strong{color:#fff}
+
+  /* table */
+  table.spec{width:100%;border-collapse:separate;border-spacing:0;margin-top:16px;font-size:13px;overflow:hidden;border-radius:var(--radius);border:1px solid var(--grid)}
+  .spec thead th{background:var(--brand);color:#fff;text-align:left;padding:12px 14px;font-weight:800;letter-spacing:.2px}
+  .spec td{padding:12px 14px;border-top:1px solid var(--grid)}
+  .spec td.col-l{width:auto}
+  .spec td.col-r{width:180px;text-align:right}
+  .spec tr:nth-child(odd) td{background:rgba(255,255,255,0.03)}
+  .spec tr td + td{border-left:1px solid var(--grid)}
+
+  /* totals */
+  .totals{margin-top:18px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .chip{border-radius:var(--radius);background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid rgba(255,255,255,0.2);padding:14px 16px}
+  .chip small{display:block;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:800;margin-bottom:6px;font-size:11px}
+  .chip strong{font-size:16px;color:#fff}
+
+  /* footer */
+  .footer{margin-top:22px}
+  .brand-note{border-radius:var(--radius);background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid rgba(255,255,255,0.2);padding:14px 16px;display:flex;justify-content:space-between;align-items:center}
+  .fine{margin-top:10px;font-size:11px;color:var(--muted)}
+
+  @page{size:A4;margin:0}
+  @media print {.page{width:auto;min-height:auto;padding:28px 32px}}
+</style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <div class="logo"><img src="${logo}" alt="theseo"></div>
+      <div class="pill">OFFERTE</div>
+    </header>
+    <div class="date">datum ${today}</div>
+
+    <section class="card" style="margin-top:12px;">
+      <div class="title">theseo</div>
+      <div class="contact">
+        <div><small>voornaam</small><strong>${escapeHtml(contact.firstName||'-')}</strong></div>
+        <div><small>achternaam</small><strong>${escapeHtml(contact.lastName||'-')}</strong></div>
+        <div><small>bedrijfsnaam</small><strong>${escapeHtml(contact.company||'-')}</strong></div>
+        <div><small>email</small><strong>${escapeHtml(contact.email||'-')}</strong></div>
+      </div>
+    </section>
+
+    <section style="margin-top:14px;">
+      <table class="spec">
+        <thead><tr><th>omschrijving</th><th style="text-align:right">bedrag</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </section>
+
+    <section class="totals">
+      <div class="chip"><small>maandelijks</small><strong>${escapeHtml(totals.monthly||'€0')}</strong></div>
+      <div class="chip"><small>eenmalig</small><strong>${escapeHtml(totals.onetime||'€0')}</strong></div>
+      <div class="chip"><small>totaal eerste maand</small><strong>${escapeHtml(totals.grand||'€0')}</strong></div>
+    </section>
+
+    <section class="footer">
+      <div class="brand-note">
+        <div style="font-weight:800">Vragen? Neem contact op.</div>
+        <div style="font-size:12px;color:#EAF0FF">E-mail: sales@theseo.nl · Web: theseo.nl</div>
+      </div>
+      <div class="fine">alle bedragen exclusief btw. indicatie op basis van de geselecteerde opties</div>
+    </section>
+  </div>
+</body>
+</html>`;
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
 }
