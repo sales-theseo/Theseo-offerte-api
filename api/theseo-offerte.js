@@ -4,19 +4,32 @@ import puppeteer from 'puppeteer-core';
 
 export const config = { runtime: 'nodejs' };
 
-/* ===== Helpers ===== */
+/* ===== CORS helper ===== */
 function setCors(res){
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  // zodat de browser de bestandsnaam mag lezen
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+}
+
+/* ===== Body parser for Vercel Node functions ===== */
+async function readJsonBody(req){
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', chunk => { data += chunk; });
+    req.on('end', () => {
+      if (!data) return resolve({});
+      try { resolve(JSON.parse(data)); }
+      catch { resolve({}); }
+    });
+    req.on('error', () => resolve({}));
+  });
 }
 
 /* ===== Handler ===== */
 export default async function handler(req, res) {
   try {
-    // CORS preflight
+    // Preflight
     if (req.method === 'OPTIONS') {
       setCors(res);
       return res.status(204).end();
@@ -27,8 +40,9 @@ export default async function handler(req, res) {
       return res.status(405).send('Method Not Allowed');
     }
 
-    // Body ophalen (Vercel Node runtime parsed JSON automatisch bij application/json)
-    const { payload } = req.body || {};
+    // IMPORTANT: parse body manually
+    const body = req.body && Object.keys(req.body).length ? req.body : await readJsonBody(req);
+    const { payload } = body || {};
     if (!payload) {
       setCors(res);
       return res.status(400).send('Bad Request: missing payload');
@@ -52,7 +66,7 @@ export default async function handler(req, res) {
   }
 }
 
-/* ===== HTML (Theseo stijl, print-safe) ===== */
+/* ===== HTML (Theseo stijl) ===== */
 function buildHTML(data){
   const { contact = {}, totals = {}, lines = [] } = data;
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
