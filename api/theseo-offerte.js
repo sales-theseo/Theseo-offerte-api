@@ -4,24 +4,34 @@ import puppeteer from 'puppeteer-core';
 
 export const config = { runtime: 'nodejs' };
 
-/** Classic Node handler (req, res) is stabiel voor Puppeteer op Vercel */
+/* ===== Helpers ===== */
+function setCors(res){
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  // zodat de browser de bestandsnaam mag lezen
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+}
+
+/* ===== Handler ===== */
 export default async function handler(req, res) {
   try {
     // CORS preflight
     if (req.method === 'OPTIONS') {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-      return res.status(200).end();
+      setCors(res);
+      return res.status(204).end();
     }
 
     if (req.method !== 'POST') {
+      setCors(res);
       return res.status(405).send('Method Not Allowed');
     }
 
+    // Body ophalen (Vercel Node runtime parsed JSON automatisch bij application/json)
     const { payload } = req.body || {};
     if (!payload) {
-      return res.status(400).send('Bad Request');
+      setCors(res);
+      return res.status(400).send('Bad Request: missing payload');
     }
 
     const html = buildHTML(payload);
@@ -29,18 +39,20 @@ export default async function handler(req, res) {
 
     const today = new Date().toLocaleDateString('nl-NL').replace(/\//g, '-');
 
+    setCors(res);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=theseo-offerte-${today}.pdf`);
     res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Access-Control-Allow-Origin', '*');
 
     return res.status(200).send(pdfBuffer);
   } catch (e) {
     console.error('PDF error', e);
+    setCors(res);
     return res.status(500).send('PDF error');
   }
 }
 
+/* ===== HTML (Theseo stijl, print-safe) ===== */
 function buildHTML(data){
   const { contact = {}, totals = {}, lines = [] } = data;
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
@@ -52,7 +64,7 @@ function buildHTML(data){
 
   const logo = "https://ek68sppdjsi.exactdn.com/wp-content/uploads/2025/06/THESEAO_LOGO_FIXED-1024x552.png?strip=all&lossy=1&sharp=1&ssl=1";
   const bg   = "#080A0E";
-  const grid = "#E6EAF5";
+  const grid = "#2D3750";
   const brand= "#1652F0";
   const today= new Date().toLocaleDateString('nl-NL');
 
@@ -75,35 +87,35 @@ function buildHTML(data){
   }
   *{box-sizing:border-box}
   html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-  .page{width:794px; /* A4 @96dpi */ min-height:1123px; padding:32px 40px; position:relative;}
+  .page{width:794px; min-height:1123px; padding:36px 42px; position:relative;}
+
   header{display:flex;align-items:center;justify-content:space-between; margin-bottom:18px;}
   .logo img{height:36px; width:auto; display:block; image-rendering:-webkit-optimize-contrast;}
   .pill{border:1px solid rgba(255,255,255,.9); border-radius:999px; padding:8px 16px; font-weight:800; letter-spacing:.6px;}
   .date{margin-top:6px; font-size:12px; color:#EAF0FF}
 
-  .card{border-radius:var(--radius); background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.42); padding:16px 18px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);}
+  .card{border-radius:var(--radius); background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.28); padding:16px 18px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);}
   .contact{margin-top:14px; display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:13px}
   .contact small{display:block; color:var(--muted); text-transform:uppercase; font-weight:800; letter-spacing:.4px; margin-bottom:4px; font-size:11px}
   .contact strong{color:#fff;}
 
   table.spec{width:100%; border-collapse:separate; border-spacing:0; margin-top:18px; font-size:13px; overflow:hidden; border-radius:var(--radius); border:1px solid var(--grid);}
-  .spec th{background:var(--brand); color:#fff; text-align:left; padding:12px 14px; font-weight:800; letter-spacing:.2px;}
-  .spec td{padding:10px 14px; border-top:1px solid var(--grid);}
+  .spec thead th{background:var(--brand); color:#fff; text-align:left; padding:12px 14px; font-weight:800; letter-spacing:.2px;}
+  .spec td{padding:11px 14px; border-top:1px solid var(--grid);}
   .spec td.col-l{width:auto}
   .spec td.col-r{width:160px; text-align:right}
   .spec tr:nth-child(odd) td{background:rgba(255,255,255,0.03)}
   .spec tr td + td{border-left:1px solid var(--grid)}
 
   .totals{margin-top:18px; display:grid; grid-template-columns:repeat(3,1fr); gap:12px;}
-  .chip{border-radius:var(--radius); background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.42); padding:14px 16px;}
+  .chip{border-radius:var(--radius); background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.28); padding:14px 16px;}
   .chip small{display:block; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; font-weight:800; margin-bottom:6px; font-size:11px}
   .chip strong{font-size:16px; color:#fff;}
 
   .footer{margin-top:22px;}
-  .brand-note{border-radius:var(--radius); background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.42); padding:14px 16px; display:flex; justify-content:space-between; align-items:center;}
+  .brand-note{border-radius:var(--radius); background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.28); padding:14px 16px; display:flex; justify-content:space-between; align-items:center;}
   .fine{margin-top:10px; font-size:11px; color:var(--muted)}
 
-  /* print-safe */
   @page{ size:A4; margin:0; }
   @media print {.page{width:auto; min-height:auto; padding:28px 32px;}}
 </style>
@@ -129,9 +141,7 @@ function buildHTML(data){
     <section style="margin-top:14px;">
       <table class="spec">
         <thead><tr><th>omschrijving</th><th style="text-align:right">bedrag</th></tr></thead>
-        <tbody>
-          ${rows}
-        </tbody>
+        <tbody>${rows}</tbody>
       </table>
     </section>
 
@@ -150,16 +160,15 @@ function buildHTML(data){
     </section>
   </div>
 </body>
-</html>
-`;
+</html>`;
 }
 
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
 }
 
+/* ===== Puppeteer rendering ===== */
 async function renderPDF(html){
-  // Sparticuz Chromium werkt in Vercel serverless
   const exePath = await chromium.executablePath;
   const browser = await puppeteer.launch({
     args: [
@@ -176,14 +185,12 @@ async function renderPDF(html){
     const page = await browser.newPage();
     await page.emulateMediaType('screen');
     await page.setContent(html, { waitUntil: ['domcontentloaded','networkidle0'] });
-
     const pdf = await page.pdf({
       format: 'A4',
       printBackground: true,
       margin: { top: 0, right: 0, bottom: 0, left: 0 },
       preferCSSPageSize: true
     });
-
     return pdf;
   } finally {
     await browser.close();
