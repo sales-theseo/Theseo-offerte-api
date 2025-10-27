@@ -1,8 +1,8 @@
 {
   "version": 2,
   "functions": {
-    "api/theseo-offerte.js": {
-      "runtime": "nodejs20.x",
+    "api/**/*.js": {
+      "runtime": "vercel-nodejs@4.0.0",
       "memory": 1024,
       "maxDuration": 20
     }
