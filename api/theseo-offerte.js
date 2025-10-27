@@ -1,6 +1,12 @@
 import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
 
+export const config = {
+  runtime: 'nodejs20.x',
+  memory: 1024,
+  maxDuration: 20,
+};
+
 export const config = { runtime: 'nodejs' };
 
 function setCors(res){
