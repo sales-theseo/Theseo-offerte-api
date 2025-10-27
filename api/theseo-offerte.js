@@ -31,13 +31,20 @@ export default async function handler(req, res){
     if (!payload){ setCors(res); return res.status(400).send('Bad Request: missing payload'); }
 
     const html = buildHTML(payload);
+
+    // ===== DEBUG INFO in headers =====
+    res.setHeader('X-Chromium-Version', chromium?.chromiumVersion || 'unknown');
+    res.setHeader('X-Chromium-Revision', chromium?.revision || 'unknown');
+
     let pdf;
     try {
       pdf = await renderPDF(html);
     } catch (e) {
       console.error('[theseo-offerte] renderPDF failed:', e?.stack || e);
       setCors(res);
-      return res.status(500).send('PDF error');
+      // >>> Stuur de volledige fout terug om te kunnen debuggen (tijdelijk)
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      return res.status(500).send('PDF error: ' + (e?.stack || e));
     }
 
     const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
@@ -52,27 +59,25 @@ export default async function handler(req, res){
   }catch(e){
     console.error('[theseo-offerte] top-level error:', e?.stack || e);
     setCors(res);
-    return res.status(500).send('PDF error');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.status(500).send('PDF error: ' + (e?.stack || e));
   }
 }
 
-/* --- minimal, self-contained HTML (geen externe fonts/js) --- */
 function buildHTML(data){
   const { contact = {}, totals = {}, lines = [] } = data;
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
     .map(([l,r])=>`<tr><td class="l">${escapeHtml(l||'')}</td><td class="r">${escapeHtml(r||'')}</td></tr>`).join('');
-
   const today= new Date().toLocaleDateString('nl-NL');
 
-  return `<!doctype html>
-<html lang="nl"><head>
+  return `<!doctype html><html lang="nl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Offerte – TheSEO</title>
 <style>
   :root{--bg:#0B0F16;--brand:#1652F0;--grid:#2D3750;--text:#fff;}
   *{box-sizing:border-box} html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial;}
-  .page{width:794px;min-height:1123px;padding:36px 42px;}
-  h1{margin:0 0 6px 0;font-size:18px;letter-spacing:.3px}
+  .page{width:794px;min-height:1123px;padding:36px 42px}
+  h1{margin:0 0 6px;font-size:18px;letter-spacing:.3px}
   .date{opacity:.9;font-size:12px;margin:8px 0 16px}
   .card{border:1px solid rgba(255,255,255,.25);border-radius:16px;background:rgba(255,255,255,.06);padding:16px 18px;margin-bottom:14px}
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -84,34 +89,24 @@ function buildHTML(data){
   tbody tr:nth-child(odd) td{background:rgba(255,255,255,.03)}
   .totals{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
   .chip{border:1px solid rgba(255,255,255,.25);border-radius:16px;background:rgba(255,255,255,.06);padding:12px 14px}
-  .chip .label{margin:0 0 6px 0}
+  .chip .label{margin:0 0 6px}
   .fine{font-size:11px;opacity:.8;margin-top:18px}
-</style>
-</head>
+</style></head>
 <body><div class="page">
   <h1>theseo — offerte</h1>
   <div class="date">datum ${today}</div>
-
-  <div class="card">
-    <div class="grid">
-      <div><div class="label">voornaam</div>${escapeHtml(contact.firstName||'-')}</div>
-      <div><div class="label">achternaam</div>${escapeHtml(contact.lastName||'-')}</div>
-      <div><div class="label">bedrijfsnaam</div>${escapeHtml(contact.company||'-')}</div>
-      <div><div class="label">email</div>${escapeHtml(contact.email||'-')}</div>
-    </div>
-  </div>
-
-  <table>
-    <thead><tr><th>omschrijving</th><th class="r">bedrag</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>
-
+  <div class="card"><div class="grid">
+    <div><div class="label">voornaam</div>${escapeHtml(contact.firstName||'-')}</div>
+    <div><div class="label">achternaam</div>${escapeHtml(contact.lastName||'-')}</div>
+    <div><div class="label">bedrijfsnaam</div>${escapeHtml(contact.company||'-')}</div>
+    <div><div class="label">email</div>${escapeHtml(contact.email||'-')}</div>
+  </div></div>
+  <table><thead><tr><th>omschrijving</th><th class="r">bedrag</th></tr></thead><tbody>${rows}</tbody></table>
   <div class="totals">
     <div class="chip"><div class="label">maandelijks</div><div>${escapeHtml(totals.monthly||'€0')}</div></div>
     <div class="chip"><div class="label">eenmalig</div><div>${escapeHtml(totals.onetime||'€0')}</div></div>
     <div class="chip"><div class="label">totaal eerste maand</div><div>${escapeHtml(totals.grand||'€0')}</div></div>
   </div>
-
   <div class="fine">alle bedragen exclusief btw. indicatie op basis van de geselecteerde opties</div>
 </div></body></html>`;
 }
@@ -121,13 +116,14 @@ function escapeHtml(s){
 }
 
 async function renderPDF(html){
-  // Sparticuz settings voor serverless
   chromium.setHeadlessMode = true;
   chromium.setGraphicsMode = false;
 
   const execPath = typeof chromium.executablePath === 'function'
     ? await chromium.executablePath()
     : await chromium.executablePath;
+
+  console.log('[theseo-offerte] execPath:', execPath);
 
   const browser = await puppeteer.launch({
     args: [
@@ -145,16 +141,8 @@ async function renderPDF(html){
   try{
     const page = await browser.newPage();
     await page.emulateMediaType('screen');
-    await page.goto('data:text/html;charset=utf-8,' + encodeURIComponent(html), {
-      waitUntil: ['load','networkidle0']
-    });
-    const pdf = await page.pdf({
-      format: 'A4',
-      printBackground: true,
-      margin: { top: 0, right: 0, bottom: 0, left: 0 },
-      preferCSSPageSize: true
-    });
-    return Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
+    await page.goto('data:text/html;charset=utf-8,' + encodeURIComponent(html), { waitUntil: ['load','networkidle0'] });
+    return await page.pdf({ format:'A4', printBackground:true, margin:{top:0,right:0,bottom:0,left:0}, preferCSSPageSize:true });
   } finally {
     await browser.close();
   }
