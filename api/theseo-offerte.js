@@ -2,9 +2,9 @@
 import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
 
-// Do NOT set { runtime: 'edge' } here. We want Node serverless.
-// Also do not set node version here; control it in Project Settings or vercel.json.
+export const config = { runtime: 'nodejs' };
 
+// --- CORS helper ---
 function setCors(res){
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -12,16 +12,22 @@ function setCors(res){
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
 }
 
-function escapeHtml(s){
-  return String(s ?? '').replace(/[&<>"']/g, m => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-  }[m]));
+// --- Safe body reader (Vercel kan body als stream geven) ---
+async function readJsonBody(req){
+  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length) return req.body;
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', c => { data += c; });
+    req.on('end', () => { try { resolve(JSON.parse(data||'{}')); } catch { resolve({}); } });
+    req.on('error', () => resolve({}));
+  });
 }
 
+// --- HTML builder (jouw Theseo stijl) ---
 function buildHTML(data){
-  const { contact = {}, totals = {}, lines = [] } = data || {};
+  const { contact = {}, totals = {}, lines = [] } = data;
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
-    .map(([l,r]) => `
+    .map(([l,r])=>`
       <tr>
         <td class="col-l">${escapeHtml(l||'')}</td>
         <td class="col-r">${escapeHtml(r||'')}</td>
@@ -33,13 +39,14 @@ function buildHTML(data){
   const brand= "#1652F0";
   const today= new Date().toLocaleDateString('nl-NL');
 
-  return `<!DOCTYPE html><html lang="nl"><head>
+  return `
+<!DOCTYPE html><html lang="nl"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Offerte – TheSEO</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 <style>
 :root{--bg:${bg};--text:#fff;--muted:#AFC3DE;--grid:${grid};--brand:${brand};--radius:16px;}
-*{box-sizing:border-box} html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
-  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif}
+*{box-sizing:border-box} html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
 .page{width:794px;min-height:1123px;padding:36px 42px;position:relative;}
 header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
 .logo img{height:36px;width:auto;display:block;image-rendering:-webkit-optimize-contrast;}
@@ -94,43 +101,83 @@ table.spec{width:100%;border-collapse:separate;border-spacing:0;margin-top:18px;
 </div></body></html>`;
 }
 
-async function readJsonBody(req){
-  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length) return req.body;
-  return new Promise((resolve) => {
-    let data = '';
-    req.on('data', c => { data += c; });
-    req.on('end', () => { try { resolve(JSON.parse(data||'{}')); } catch { resolve({}); } });
-    req.on('error', () => resolve({}));
-  });
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
 }
 
+// --- PDF renderer ---
+async function renderPDF(html){
+  // Zorg dat chromium de juiste libpack pakt (v126 heeft libnss3.so)
+  chromium.setHeadlessMode = true;
+  chromium.setGraphicsMode = false;
+
+  // deze pack bevat binaries + libs voor Vercel/AWS (v126)
+  const execPath = await chromium.executablePath(
+    'https://github.com/Sparticuz/chromium/releases/download/v126/chromium-v126-pack.tar'
+  );
+
+  if (!execPath) throw new Error('Chromium executablePath not resolved');
+
+  // extra env zodat de dynamische libs gevonden worden
+  process.env.LD_LIBRARY_PATH = `${process.env.LD_LIBRARY_PATH || ''}:${execPath.replace(/\/chromium$/, '')}`;
+
+  const browser = await puppeteer.launch({
+    args: [
+      ...chromium.args,
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--single-process',
+      '--disable-gpu',
+      '--font-render-hinting=medium'
+    ],
+    defaultViewport: { width: 1123, height: 794, deviceScaleFactor: 2 },
+    executablePath: execPath,
+    headless: chromium.headless
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.emulateMediaType('screen');
+
+    // data: URL route is het stabielst in Lambdas
+    const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+    await page.goto(dataUrl, { waitUntil: ['load', 'networkidle0'] , timeout: 30000 });
+
+    const pdf = await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      preferCSSPageSize: true,
+      margin: { top: 0, right: 0, bottom: 0, left: 0 }
+    });
+
+    return pdf;
+  } finally {
+    await browser.close().catch(()=>{});
+  }
+}
+
+// --- Handler ---
 export default async function handler(req, res){
   try{
-    // CORS & preflight
-    if (req.method === 'OPTIONS'){
-      setCors(res);
-      return res.status(204).end();
-    }
+    // CORS / preflight
+    if (req.method === 'OPTIONS'){ setCors(res); return res.status(204).end(); }
 
-    // quick diag
-    if (req.method === 'GET' && req.query && req.query.diag){
+    // Quick diag (GET of POST ?diag=1)
+    if ((req.method === 'GET' || req.method === 'POST') && (req.query?.diag === '1')) {
+      const execPath = await chromium.executablePath(
+        'https://github.com/Sparticuz/chromium/releases/download/v126/chromium-v126-pack.tar'
+      ).catch(e => null);
       setCors(res);
-      const hasExecFn = typeof chromium.executablePath === 'function';
-      let execPath = null, execErr = null;
-      try { execPath = hasExecFn ? await chromium.executablePath() : await chromium.executablePath; }
-      catch(e){ execErr = String(e?.message || e); }
-
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      return res.status(200).send(JSON.stringify({
-        diag:true,
-        info:{
+      return res.status(200).json({
+        diag: true,
+        info: {
           node: process.version,
           platform: process.platform,
           arch: process.arch,
-          chromiumHeadless: chromium.headless ? 'new' : 'legacy',
+          chromiumHeadless: chromium.headless ? 'new' : 'legacy'
         },
-        execPath, execErr
-      }));
+        execPath: execPath || null
+      });
     }
 
     if (req.method !== 'POST'){
@@ -155,52 +202,7 @@ export default async function handler(req, res){
     res.setHeader('Cache-Control', 'no-store');
     return res.status(200).send(pdfBuffer);
   }catch(e){
-    // If Chromium crashes, we surface the message so curl shows it.
     setCors(res);
-    console.error('PDF error', e);
-    return res.status(500).send('PDF error: ' + (e?.message || String(e)));
-  }
-}
-
-async function renderPDF(html){
-  // harden Chromium boot for Vercel
-  chromium.setHeadlessMode = true;
-  chromium.setGraphicsMode = false;
-
-  const execPath = typeof chromium.executablePath === 'function'
-    ? await chromium.executablePath()
-    : await chromium.executablePath;
-
-  if (!execPath) throw new Error('Chromium executablePath not resolved');
-
-  const browser = await puppeteer.launch({
-    args: [
-      ...chromium.args,
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--single-process',
-      '--font-render-hinting=medium'
-    ],
-    defaultViewport: chromium.defaultViewport || { width: 1123, height: 794, deviceScaleFactor: 2 },
-    executablePath: execPath,
-    headless: chromium.headless
-  });
-
-  try{
-    const page = await browser.newPage();
-    await page.emulateMediaType('screen');
-
-    // No external fetches: setContent with DOM ready, tiny settle wait
-    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    await page.waitForTimeout(200);
-
-    return await page.pdf({
-      format: 'A4',
-      printBackground: true,
-      preferCSSPageSize: true,
-      margin: { top: 0, right: 0, bottom: 0, left: 0 }
-    });
-  } finally {
-    await browser.close();
+    return res.status(500).send(`PDF error: ${e?.message || e}`);
   }
 }
