@@ -1,10 +1,11 @@
 // api/theseo-offerte.js
-import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
+import chromium from '@sparticuz/chromium';
+import path from 'node:path';
+import fs from 'node:fs';
 
 export const config = { runtime: 'nodejs' };
 
-// CORS helper
 function setCors(res){
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -15,47 +16,47 @@ function setCors(res){
 function readJson(req){
   return new Promise(resolve=>{
     if (req.body && typeof req.body === 'object') return resolve(req.body);
-    let data = '';
-    req.on('data', c => data += c);
-    req.on('end', ()=>{ try { resolve(JSON.parse(data || '{}')); } catch { resolve({}); } });
-    req.on('error', ()=> resolve({}));
+    let data=''; req.on('data',c=>data+=c);
+    req.on('end',()=>{ try{ resolve(JSON.parse(data||'{}')); }catch{ resolve({}); }});
+    req.on('error',()=>resolve({}));
   });
 }
 
-export default async function handler(req, res){
+export default async function handler(req,res){
   const t0 = Date.now();
   try{
-    if (req.method === 'OPTIONS'){ setCors(res); return res.status(204).end(); }
-    if (req.method !== 'POST'){ setCors(res); return res.status(405).send('Method Not Allowed'); }
+    if(req.method==='OPTIONS'){ setCors(res); return res.status(204).end(); }
+    if(req.method!=='POST'){ setCors(res); return res.status(405).send('Method Not Allowed'); }
 
     const { payload } = await readJson(req);
-    if (!payload){ setCors(res); return res.status(400).send('Bad Request: missing payload'); }
+    if(!payload){ setCors(res); return res.status(400).send('Bad Request: missing payload'); }
 
-    // --- DIAG MODE ---
-    if (req.query?.diag === '1'){
+    // diag: snelle check
+    if(req.query?.diag==='1'){
       const execPath = await chromium.executablePath();
-      const info = {
-        node: process.version,
-        platform: process.platform,
-        arch: process.arch,
-        chromiumHeadless: chromium.headless ? 'new' : 'old',
-      };
       setCors(res);
-      return res.status(200).json({ diag: true, info, execPath });
+      return res.status(200).json({
+        diag:true,
+        info:{ node:process.version, platform:process.platform, arch:process.arch, headless:chromium.headless?'new':'old' },
+        execPath
+      });
     }
 
-    // --- HTML opbouwen ---
     const html = buildHTML(payload);
 
-    // Pad naar Chromium bepalen
-    const execPath = await chromium.executablePath();
-    // Zorg dat gedeelde libs (libnss3, etc.) gevonden worden
+    // === ROBUUST LIB-PAD ZETTEN ===
+    const execPath = await chromium.executablePath();     // bv. /tmp/chromium
+    const baseDir  = path.dirname(execPath);              // /tmp
+    const libDir   = path.join(baseDir, 'chromium', 'lib'); // veel builds: /tmp/chromium/lib
+    const candidateLibs = [libDir, baseDir, '/var/task', '/var/task/lib', '/opt/lib']
+      .filter(p => { try{ return fs.existsSync(p); }catch{ return false; } });
+
     process.env.LD_LIBRARY_PATH = [
       process.env.LD_LIBRARY_PATH || '',
-      chromium.libPath
+      ...candidateLibs
     ].filter(Boolean).join(':');
 
-    // ÉÉN enkele launch
+    // === ÉÉN launch ===
     const browser = await puppeteer.launch({
       args: [
         ...chromium.args,
@@ -65,7 +66,8 @@ export default async function handler(req, res){
       ],
       defaultViewport: { width: 1123, height: 794, deviceScaleFactor: 2 },
       executablePath: execPath,
-      headless: chromium.headless
+      headless: chromium.headless,
+      ignoreHTTPSErrors: true
     });
 
     let pdf;
@@ -76,7 +78,7 @@ export default async function handler(req, res){
       pdf = await page.pdf({
         format: 'A4',
         printBackground: true,
-        margin: { top: 0, right: 0, bottom: 0, left: 0 },
+        margin: { top:0, right:0, bottom:0, left:0 },
         preferCSSPageSize: true
       });
     } finally {
@@ -85,21 +87,21 @@ export default async function handler(req, res){
 
     const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
     setCors(res);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=theseo-offerte-${today}.pdf`);
-    res.setHeader('Cache-Control', 'no-store');
-    console.log('[theseo] OK in', Date.now() - t0, 'ms');
+    res.setHeader('Content-Type','application/pdf');
+    res.setHeader('Content-Disposition',`attachment; filename=theseo-offerte-${today}.pdf`);
+    res.setHeader('Cache-Control','no-store');
+    console.log('[theseo] OK in', Date.now()-t0,'ms');
     return res.status(200).send(pdf);
 
-  } catch (e){
+  } catch(e){
     console.error('[theseo] FATAL', e?.stack || e);
     setCors(res);
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Type','text/plain; charset=utf-8');
     return res.status(500).send('PDF error: ' + (e?.message || String(e)));
   }
 }
 
-/* ===== HTML generator ===== */
+/* === HTML === */
 function buildHTML(data){
   const { contact = {}, totals = {}, lines = [] } = data;
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
@@ -115,8 +117,7 @@ function buildHTML(data){
   const brand= "#1652F0";
   const today= new Date().toLocaleDateString('nl-NL');
 
-  return `
-<!DOCTYPE html><html lang="nl"><head>
+  return `<!DOCTYPE html><html lang="nl"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Offerte – TheSEO</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
