@@ -4,7 +4,7 @@ import puppeteer from 'puppeteer-core';
 
 export const config = { runtime: 'nodejs' };
 
-// kleine helper voor CORS
+// CORS helper
 function setCors(res){
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -15,8 +15,9 @@ function setCors(res){
 function readJson(req){
   return new Promise(resolve=>{
     if (req.body && typeof req.body === 'object') return resolve(req.body);
-    let data = ''; req.on('data', c => data += c);
-    req.on('end', ()=>{ try{ resolve(JSON.parse(data||'{}')); } catch{ resolve({}); }});
+    let data = '';
+    req.on('data', c => data += c);
+    req.on('end', ()=>{ try { resolve(JSON.parse(data || '{}')); } catch { resolve({}); } });
     req.on('error', ()=> resolve({}));
   });
 }
@@ -32,7 +33,7 @@ export default async function handler(req, res){
 
     // --- DIAG MODE ---
     if (req.query?.diag === '1'){
-      const execPath = await chromium.executablePath();  // autodetect
+      const execPath = await chromium.executablePath();
       const info = {
         node: process.version,
         platform: process.platform,
@@ -40,33 +41,21 @@ export default async function handler(req, res){
         chromiumHeadless: chromium.headless ? 'new' : 'old',
       };
       setCors(res);
-      return res.status(200).json({ diag:true, info, execPath });
+      return res.status(200).json({ diag: true, info, execPath });
     }
 
-    // --- PDF ---
+    // --- HTML opbouwen ---
     const html = buildHTML(payload);
-    const execPath = await chromium.executablePath(); // BELANGRIJK: geen URL, gewoon autodetect
-    console.log('[theseo] execPath', execPath);
 
-    // make sure chromium can find its shared libs (libnss3, etc.)
-process.env.LD_LIBRARY_PATH = [
-  process.env.LD_LIBRARY_PATH || '',
-  chromium.libPath            // <-- path bundled by @sparticuz/chromium
-].filter(Boolean).join(':');
+    // Pad naar Chromium bepalen
+    const execPath = await chromium.executablePath();
+    // Zorg dat gedeelde libs (libnss3, etc.) gevonden worden
+    process.env.LD_LIBRARY_PATH = [
+      process.env.LD_LIBRARY_PATH || '',
+      chromium.libPath
+    ].filter(Boolean).join(':');
 
-const browser = await puppeteer.launch({
-  args: [
-    ...chromium.args,
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--font-render-hinting=medium'
-  ],
-  defaultViewport: { width: 1123, height: 794, deviceScaleFactor: 2 },
-  executablePath: await chromium.executablePath(), // <-- call the fn
-  headless: chromium.headless
-});
-    
-    // optionele flags voor lambda
+    // ÉÉN enkele launch
     const browser = await puppeteer.launch({
       args: [
         ...chromium.args,
@@ -78,37 +67,39 @@ const browser = await puppeteer.launch({
       executablePath: execPath,
       headless: chromium.headless
     });
-    console.log('[theseo] browser launched in', Date.now()-t0, 'ms');
 
-    const page = await browser.newPage();
-    await page.emulateMediaType('screen');
-    await page.setContent(html, { waitUntil: ['domcontentloaded','networkidle0'] });
-    const pdf = await page.pdf({
-      format: 'A4',
-      printBackground: true,
-      margin: { top: 0, right: 0, bottom: 0, left: 0 },
-      preferCSSPageSize: true
-    });
-    await browser.close();
+    let pdf;
+    try{
+      const page = await browser.newPage();
+      await page.emulateMediaType('screen');
+      await page.setContent(html, { waitUntil: ['domcontentloaded','networkidle0'] });
+      pdf = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: { top: 0, right: 0, bottom: 0, left: 0 },
+        preferCSSPageSize: true
+      });
+    } finally {
+      await browser.close();
+    }
 
     const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
     setCors(res);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=theseo-offerte-${today}.pdf`);
     res.setHeader('Cache-Control', 'no-store');
-    console.log('[theseo] OK total ms=', Date.now()-t0);
+    console.log('[theseo] OK in', Date.now() - t0, 'ms');
     return res.status(200).send(pdf);
 
   } catch (e){
-    console.error('[theseo] FATAL', e && (e.stack || e));
+    console.error('[theseo] FATAL', e?.stack || e);
     setCors(res);
-    // geef de echte fout ook terug, zodat je die in curl ziet
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    return res.status(500).send('PDF error: ' + (e && e.message ? e.message : String(e)));
+    return res.status(500).send('PDF error: ' + (e?.message || String(e)));
   }
 }
 
-/* ——— jouw huidige HTML generator (ongewijzigd) ——— */
+/* ===== HTML generator ===== */
 function buildHTML(data){
   const { contact = {}, totals = {}, lines = [] } = data;
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
@@ -187,5 +178,7 @@ table.spec{width:100%;border-collapse:separate;border-spacing:0;margin-top:18px;
 }
 
 function escapeHtml(s){
-  return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
+  return String(s).replace(/[&<>"']/g, m => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[m]));
 }
