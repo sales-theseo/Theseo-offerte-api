@@ -1,10 +1,15 @@
 {
   "version": 2,
+  "builds": [
+    { "src": "api/**/*.js", "use": "@vercel/node" }
+  ],
   "functions": {
     "api/theseo-offerte.js": {
-      "runtime": "nodejs",
       "memory": 1024,
       "maxDuration": 20
     }
-  }
+  },
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/$1" }
+  ]
 }
