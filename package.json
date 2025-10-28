@@ -1,10 +1,11 @@
 {
   "name": "theseo-offerte-api",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "engines": { "node": "20.x" },
   "dependencies": {
     "@sparticuz/chromium": "126.0.0",
-    "puppeteer-core": "22.6.3"
+    "puppeteer-core": "22.15.0"
   }
 }
