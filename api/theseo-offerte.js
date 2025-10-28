@@ -1,11 +1,10 @@
 // api/theseo-offerte.js
-import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
-import path from 'node:path';
-import fs from 'node:fs';
+import puppeteer from 'puppeteer-core';
 
 export const config = { runtime: 'nodejs' };
 
+/** CORS helpers */
 function setCors(res){
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -16,47 +15,45 @@ function setCors(res){
 function readJson(req){
   return new Promise(resolve=>{
     if (req.body && typeof req.body === 'object') return resolve(req.body);
-    let data=''; req.on('data',c=>data+=c);
-    req.on('end',()=>{ try{ resolve(JSON.parse(data||'{}')); }catch{ resolve({}); }});
-    req.on('error',()=>resolve({}));
+    let data = ''; req.on('data', c => data += c);
+    req.on('end', ()=>{ try{ resolve(JSON.parse(data||'{}')); } catch{ resolve({}); }});
+    req.on('error', ()=> resolve({}));
   });
 }
 
-export default async function handler(req,res){
+export default async function handler(req, res){
   const t0 = Date.now();
   try{
-    if(req.method==='OPTIONS'){ setCors(res); return res.status(204).end(); }
-    if(req.method!=='POST'){ setCors(res); return res.status(405).send('Method Not Allowed'); }
+    if (req.method === 'OPTIONS'){ setCors(res); return res.status(204).end(); }
+    if (req.method !== 'POST'){ setCors(res); return res.status(405).send('Method Not Allowed'); }
 
     const { payload } = await readJson(req);
-    if(!payload){ setCors(res); return res.status(400).send('Bad Request: missing payload'); }
+    if (!payload){ setCors(res); return res.status(400).send('Bad Request: missing payload'); }
 
-    // diag: snelle check
-    if(req.query?.diag==='1'){
-      const execPath = await chromium.executablePath();
+    // DIAG (optioneel): /api/theseo-offerte?diag=1
+    if ((req.query && req.query.diag === '1') || (req.url && req.url.includes('diag=1'))){
+      const execPath = await chromium.executablePath();  // laat chromium zelf bepalen
       setCors(res);
       return res.status(200).json({
-        diag:true,
-        info:{ node:process.version, platform:process.platform, arch:process.arch, headless:chromium.headless?'new':'old' },
+        diag: true,
+        info: {
+          node: process.version,
+          platform: process.platform,
+          arch: process.arch,
+          chromiumHeadless: chromium.headless ? 'new' : 'old'
+        },
         execPath
       });
     }
 
-    const html = buildHTML(payload);
-
-    // === ROBUUST LIB-PAD ZETTEN ===
-    const execPath = await chromium.executablePath();     // bv. /tmp/chromium
-    const baseDir  = path.dirname(execPath);              // /tmp
-    const libDir   = path.join(baseDir, 'chromium', 'lib'); // veel builds: /tmp/chromium/lib
-    const candidateLibs = [libDir, baseDir, '/var/task', '/var/task/lib', '/opt/lib']
-      .filter(p => { try{ return fs.existsSync(p); }catch{ return false; } });
-
+    // Zorg dat bundled libs zichtbaar zijn (libnss3 enz.)
     process.env.LD_LIBRARY_PATH = [
       process.env.LD_LIBRARY_PATH || '',
-      ...candidateLibs
+      chromium.libPath || ''
     ].filter(Boolean).join(':');
 
-    // === ÉÉN launch ===
+    // Launch
+    const execPath = await chromium.executablePath(); // <- belangrijk
     const browser = await puppeteer.launch({
       args: [
         ...chromium.args,
@@ -64,44 +61,41 @@ export default async function handler(req,res){
         '--disable-setuid-sandbox',
         '--font-render-hinting=medium'
       ],
-      defaultViewport: { width: 1123, height: 794, deviceScaleFactor: 2 },
       executablePath: execPath,
       headless: chromium.headless,
-      ignoreHTTPSErrors: true
+      defaultViewport: { width: 1123, height: 794, deviceScaleFactor: 2 }
     });
 
-    let pdf;
-    try{
-      const page = await browser.newPage();
-      await page.emulateMediaType('screen');
-      await page.setContent(html, { waitUntil: ['domcontentloaded','networkidle0'] });
-      pdf = await page.pdf({
-        format: 'A4',
-        printBackground: true,
-        margin: { top:0, right:0, bottom:0, left:0 },
-        preferCSSPageSize: true
-      });
-    } finally {
-      await browser.close();
-    }
+    const html = buildHTML(payload);
+    const page = await browser.newPage();
+    await page.emulateMediaType('screen');
+    await page.setContent(html, { waitUntil: ['domcontentloaded','networkidle0'] });
+
+    const pdf = await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      margin: { top: 0, right: 0, bottom: 0, left: 0 },
+      preferCSSPageSize: true
+    });
+
+    await browser.close();
 
     const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
     setCors(res);
-    res.setHeader('Content-Type','application/pdf');
-    res.setHeader('Content-Disposition',`attachment; filename=theseo-offerte-${today}.pdf`);
-    res.setHeader('Cache-Control','no-store');
-    console.log('[theseo] OK in', Date.now()-t0,'ms');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=theseo-offerte-${today}.pdf`);
+    res.setHeader('Cache-Control', 'no-store');
     return res.status(200).send(pdf);
 
-  } catch(e){
-    console.error('[theseo] FATAL', e?.stack || e);
+  }catch(e){
+    console.error('[theseo] FATAL', e && (e.stack || e));
     setCors(res);
-    res.setHeader('Content-Type','text/plain; charset=utf-8');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     return res.status(500).send('PDF error: ' + (e?.message || String(e)));
   }
 }
 
-/* === HTML === */
+/* — HTML generator — */
 function buildHTML(data){
   const { contact = {}, totals = {}, lines = [] } = data;
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
@@ -117,7 +111,8 @@ function buildHTML(data){
   const brand= "#1652F0";
   const today= new Date().toLocaleDateString('nl-NL');
 
-  return `<!DOCTYPE html><html lang="nl"><head>
+  return `
+<!DOCTYPE html><html lang="nl"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Offerte – TheSEO</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
@@ -179,7 +174,5 @@ table.spec{width:100%;border-collapse:separate;border-spacing:0;margin-top:18px;
 }
 
 function escapeHtml(s){
-  return String(s).replace(/[&<>"']/g, m => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-  }[m]));
+  return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
 }
