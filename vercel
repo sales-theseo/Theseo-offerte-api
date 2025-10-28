@@ -3,13 +3,8 @@
   "functions": {
     "api/theseo-offerte.js": {
       "runtime": "nodejs20.x",
-      "memory": 1536,
-      "maxDuration": 60,
-      "architecture": "arm64",
-      "environment": {
-        "CHROMIUM_DISABLE_SANDBOX": "1",
-        "SPARTICUZ_CHROMIUM_FORCE_LAMBDA": "true"
-      }
+      "memory": 1024,
+      "maxDuration": 20
     }
   }
 }
