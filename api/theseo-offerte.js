@@ -112,9 +112,7 @@ async function renderPDF(html){
   chromium.setGraphicsMode = false;
 
   // deze pack bevat binaries + libs voor Vercel/AWS (v126)
-  const execPath = await chromium.executablePath(
-  'https://github.com/Sparticuz/chromium/releases/download/v126/chromium-v126-pack.tar.br'
-);
+  const execPath = await chromium.executablePath();
 
   if (!execPath) throw new Error('Chromium executablePath not resolved');
 
