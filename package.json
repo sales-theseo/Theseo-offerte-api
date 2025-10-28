@@ -9,7 +9,7 @@
     "build": "echo \"no build\""
   },
   "dependencies": {
-    "@sparticuz/chromium": "124.0.1",
+    "@sparticuz/chromium": "131.0.1",
     "puppeteer-core": "22.15.0"
   }
 }
