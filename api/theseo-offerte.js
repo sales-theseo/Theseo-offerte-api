@@ -1,10 +1,11 @@
 // api/theseo-offerte.js
 import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
+import fs from 'node:fs';
 
 export const config = { runtime: 'nodejs' };
 
-/** CORS helpers */
+// ---- CORS
 function setCors(res){
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -12,6 +13,7 @@ function setCors(res){
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
 }
 
+// ---- Body
 function readJson(req){
   return new Promise(resolve=>{
     if (req.body && typeof req.body === 'object') return resolve(req.body);
@@ -30,9 +32,9 @@ export default async function handler(req, res){
     const { payload } = await readJson(req);
     if (!payload){ setCors(res); return res.status(400).send('Bad Request: missing payload'); }
 
-    // DIAG (optioneel): /api/theseo-offerte?diag=1
+    // --- DIAG: /api/theseo-offerte?diag=1
     if ((req.query && req.query.diag === '1') || (req.url && req.url.includes('diag=1'))){
-      const execPath = await chromium.executablePath();  // laat chromium zelf bepalen
+      const execPath = await chromium.executablePath();
       setCors(res);
       return res.status(200).json({
         diag: true,
@@ -46,14 +48,36 @@ export default async function handler(req, res){
       });
     }
 
-    // Zorg dat bundled libs zichtbaar zijn (libnss3 enz.)
-    process.env.LD_LIBRARY_PATH = [
-      process.env.LD_LIBRARY_PATH || '',
-      chromium.libPath || ''
-    ].filter(Boolean).join(':');
+    // --- DIAG: /api/theseo-offerte?diag=libs
+    if ((req.query && req.query.diag === 'libs') || (req.url && req.url.includes('diag=libs'))){
+      const execPath = await chromium.executablePath();
+      const libPath  = chromium.libPath || '';
+      const ldBefore = process.env.LD_LIBRARY_PATH || '';
+      let sample = null;
+      try { if (libPath && fs.existsSync(libPath)) sample = fs.readdirSync(libPath).slice(0, 50); } catch(_){}
+      setCors(res);
+      return res.status(200).json({
+        diag: 'libs',
+        execPath,
+        libPath,
+        ldLibraryPath: ldBefore,
+        libDirExists: !!(libPath && fs.existsSync(libPath)),
+        sampleLibs: sample
+      });
+    }
+
+    // --- Kritiek: libs zichtbaar maken (voor libnss3.so e.d.)
+    // Sparticuz levert de .so’s mee in chromium.libPath; voeg die toe aan het zoekpad:
+    const libPath = chromium.libPath || '';
+    process.env.LD_LIBRARY_PATH = [ process.env.LD_LIBRARY_PATH || '', libPath ]
+      .filter(Boolean).join(':');
+
+    // Aanrader volgens Sparticuz:
+    chromium.setHeadlessMode = true;
+    chromium.setGraphicsMode = false;
 
     // Launch
-    const execPath = await chromium.executablePath(); // <- belangrijk
+    const execPath = await chromium.executablePath();
     const browser = await puppeteer.launch({
       args: [
         ...chromium.args,
@@ -80,14 +104,14 @@ export default async function handler(req, res){
 
     await browser.close();
 
-    const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
+    const today = new Date().toLocaleDateString('nl-NL').replace(/\//g, '-');
     setCors(res);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=theseo-offerte-${today}.pdf`);
     res.setHeader('Cache-Control', 'no-store');
     return res.status(200).send(pdf);
 
-  }catch(e){
+  } catch (e){
     console.error('[theseo] FATAL', e && (e.stack || e));
     setCors(res);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -95,7 +119,7 @@ export default async function handler(req, res){
   }
 }
 
-/* — HTML generator — */
+/* ---- HTML (zoals je had) ---- */
 function buildHTML(data){
   const { contact = {}, totals = {}, lines = [] } = data;
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
