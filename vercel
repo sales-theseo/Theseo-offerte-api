@@ -2,7 +2,7 @@
   "version": 2,
   "functions": {
     "api/theseo-offerte.js": {
-      "runtime": "nodejs20.x",
+      "runtime": "nodejs",
       "memory": 1024,
       "maxDuration": 20
     }
