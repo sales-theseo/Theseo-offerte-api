@@ -4,7 +4,7 @@ import puppeteer from 'puppeteer-core';
 
 export const config = { runtime: 'nodejs' };
 
-// --- CORS helper ---
+// kleine helper voor CORS
 function setCors(res){
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -12,18 +12,85 @@ function setCors(res){
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
 }
 
-// --- Safe body reader (Vercel kan body als stream geven) ---
-async function readJsonBody(req){
-  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length) return req.body;
-  return new Promise((resolve) => {
-    let data = '';
-    req.on('data', c => { data += c; });
-    req.on('end', () => { try { resolve(JSON.parse(data||'{}')); } catch { resolve({}); } });
-    req.on('error', () => resolve({}));
+function readJson(req){
+  return new Promise(resolve=>{
+    if (req.body && typeof req.body === 'object') return resolve(req.body);
+    let data = ''; req.on('data', c => data += c);
+    req.on('end', ()=>{ try{ resolve(JSON.parse(data||'{}')); } catch{ resolve({}); }});
+    req.on('error', ()=> resolve({}));
   });
 }
 
-// --- HTML builder (jouw Theseo stijl) ---
+export default async function handler(req, res){
+  const t0 = Date.now();
+  try{
+    if (req.method === 'OPTIONS'){ setCors(res); return res.status(204).end(); }
+    if (req.method !== 'POST'){ setCors(res); return res.status(405).send('Method Not Allowed'); }
+
+    const { payload } = await readJson(req);
+    if (!payload){ setCors(res); return res.status(400).send('Bad Request: missing payload'); }
+
+    // --- DIAG MODE ---
+    if (req.query?.diag === '1'){
+      const execPath = await chromium.executablePath();  // autodetect
+      const info = {
+        node: process.version,
+        platform: process.platform,
+        arch: process.arch,
+        chromiumHeadless: chromium.headless ? 'new' : 'old',
+      };
+      setCors(res);
+      return res.status(200).json({ diag:true, info, execPath });
+    }
+
+    // --- PDF ---
+    const html = buildHTML(payload);
+    const execPath = await chromium.executablePath(); // BELANGRIJK: geen URL, gewoon autodetect
+    console.log('[theseo] execPath', execPath);
+
+    // optionele flags voor lambda
+    const browser = await puppeteer.launch({
+      args: [
+        ...chromium.args,
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--font-render-hinting=medium'
+      ],
+      defaultViewport: { width: 1123, height: 794, deviceScaleFactor: 2 },
+      executablePath: execPath,
+      headless: chromium.headless
+    });
+    console.log('[theseo] browser launched in', Date.now()-t0, 'ms');
+
+    const page = await browser.newPage();
+    await page.emulateMediaType('screen');
+    await page.setContent(html, { waitUntil: ['domcontentloaded','networkidle0'] });
+    const pdf = await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      margin: { top: 0, right: 0, bottom: 0, left: 0 },
+      preferCSSPageSize: true
+    });
+    await browser.close();
+
+    const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
+    setCors(res);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=theseo-offerte-${today}.pdf`);
+    res.setHeader('Cache-Control', 'no-store');
+    console.log('[theseo] OK total ms=', Date.now()-t0);
+    return res.status(200).send(pdf);
+
+  } catch (e){
+    console.error('[theseo] FATAL', e && (e.stack || e));
+    setCors(res);
+    // geef de echte fout ook terug, zodat je die in curl ziet
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.status(500).send('PDF error: ' + (e && e.message ? e.message : String(e)));
+  }
+}
+
+/* ——— jouw huidige HTML generator (ongewijzigd) ——— */
 function buildHTML(data){
   const { contact = {}, totals = {}, lines = [] } = data;
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
@@ -103,104 +170,4 @@ table.spec{width:100%;border-collapse:separate;border-spacing:0;margin-top:18px;
 
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
-}
-
-// --- PDF renderer ---
-async function renderPDF(html){
-  // Zorg dat chromium de juiste libpack pakt (v126 heeft libnss3.so)
-  chromium.setHeadlessMode = true;
-  chromium.setGraphicsMode = false;
-
-  // deze pack bevat binaries + libs voor Vercel/AWS (v126)
-  const execPath = await chromium.executablePath();
-
-  if (!execPath) throw new Error('Chromium executablePath not resolved');
-
-  // extra env zodat de dynamische libs gevonden worden
-  process.env.LD_LIBRARY_PATH = `${process.env.LD_LIBRARY_PATH || ''}:${execPath.replace(/\/chromium$/, '')}`;
-
-  const browser = await puppeteer.launch({
-    args: [
-      ...chromium.args,
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--single-process',
-      '--disable-gpu',
-      '--font-render-hinting=medium'
-    ],
-    defaultViewport: { width: 1123, height: 794, deviceScaleFactor: 2 },
-    executablePath: execPath,
-    headless: chromium.headless
-  });
-
-  try {
-    const page = await browser.newPage();
-    await page.emulateMediaType('screen');
-
-    // data: URL route is het stabielst in Lambdas
-    const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
-    await page.goto(dataUrl, { waitUntil: ['load', 'networkidle0'] , timeout: 30000 });
-
-    const pdf = await page.pdf({
-      format: 'A4',
-      printBackground: true,
-      preferCSSPageSize: true,
-      margin: { top: 0, right: 0, bottom: 0, left: 0 }
-    });
-
-    return pdf;
-  } finally {
-    await browser.close().catch(()=>{});
-  }
-}
-
-// --- Handler ---
-export default async function handler(req, res){
-  try{
-    // CORS / preflight
-    if (req.method === 'OPTIONS'){ setCors(res); return res.status(204).end(); }
-
-    // Quick diag (GET of POST ?diag=1)
-    if ((req.method === 'GET' || req.method === 'POST') && (req.query?.diag === '1')) {
-      const execPath = await chromium.executablePath(
-        'https://github.com/Sparticuz/chromium/releases/download/v126/chromium-v126-pack.tar'
-      ).catch(e => null);
-      setCors(res);
-      return res.status(200).json({
-        diag: true,
-        info: {
-          node: process.version,
-          platform: process.platform,
-          arch: process.arch,
-          chromiumHeadless: chromium.headless ? 'new' : 'legacy'
-        },
-        execPath: execPath || null
-      });
-    }
-
-    if (req.method !== 'POST'){
-      setCors(res);
-      return res.status(405).send('Method Not Allowed');
-    }
-
-    const body = await readJsonBody(req);
-    const { payload } = body || {};
-    if (!payload){
-      setCors(res);
-      return res.status(400).send('Bad Request: missing payload');
-    }
-
-    const html = buildHTML(payload);
-    const pdfBuffer = await renderPDF(html);
-
-    const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
-    setCors(res);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=theseo-offerte-${today}.pdf`);
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(200).send(pdfBuffer);
-  }catch(e){
-    setCors(res);
-    return res.status(500).send(`PDF error: ${e?.message || e}`);
-  }
 }
