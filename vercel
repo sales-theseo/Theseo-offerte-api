@@ -1,1 +1,15 @@
-{ "version": 2 }
+{
+  "version": 2,
+  "functions": {
+    "api/theseo-offerte.js": {
+      "runtime": "nodejs20.x",
+      "memory": 1536,
+      "maxDuration": 60,
+      "architecture": "arm64",
+      "environment": {
+        "CHROMIUM_DISABLE_SANDBOX": "1",
+        "SPARTICUZ_CHROMIUM_FORCE_LAMBDA": "true"
+      }
+    }
+  }
+}
