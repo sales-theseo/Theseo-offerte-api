@@ -2,97 +2,26 @@
 import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
 
-export const config = { runtime: 'nodejs' };
+// Do NOT set { runtime: 'edge' } here. We want Node serverless.
+// Also do not set node version here; control it in Project Settings or vercel.json.
 
-// --- helpers ---
 function setCors(res){
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
 }
-function readJsonBody(req){
-  return new Promise((resolve) => {
-    if (req.body && typeof req.body === 'object') return resolve(req.body);
-    let data = '';
-    req.on('data', c => { data += c; });
-    req.on('end', () => { try { resolve(JSON.parse(data||'{}')); } catch { resolve({}); } });
-    req.on('error', () => resolve({}));
-  });
-}
-function q(req){
-  try{
-    const url = new URL(req.url || '', 'https://dummy.local');
-    const obj = {};
-    url.searchParams.forEach((v,k)=>obj[k]=v);
-    return obj;
-  }catch{ return {}; }
+
+function escapeHtml(s){
+  return String(s ?? '').replace(/[&<>"']/g, m => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[m]));
 }
 
-export default async function handler(req, res){
-  try{
-    const query = q(req);
-
-    // CORS / health
-    if (req.method === 'OPTIONS'){ setCors(res); return res.status(204).end(); }
-    if (req.method === 'GET' && query.health === '1'){
-      setCors(res);
-      return res.status(200).type('text/plain').send('OK');
-    }
-
-    if (req.method !== 'POST'){ setCors(res); return res.status(405).send('Method Not Allowed'); }
-
-    const { payload } = await readJsonBody(req);
-    if (!payload){ setCors(res); return res.status(400).send('Bad Request: missing payload'); }
-
-    // ---- DIAGNOSE MODUS ----
-    if (String(query.diag) === '1'){
-      const info = {
-        node: process.version,
-        platform: process.platform,
-        arch: process.arch,
-        chromiumHeadless: chromium.headless,
-        chromiumArgsFirst5: (chromium.args||[]).slice(0, 5),
-        hasExecPathFn: typeof chromium.executablePath === 'function',
-        envNodeOptions: process.env.NODE_OPTIONS || '',
-      };
-      let execPath = null, execErr = null;
-      try{
-        execPath = typeof chromium.executablePath === 'function'
-          ? await chromium.executablePath()
-          : await chromium.executablePath;
-      }catch(e){ execErr = String(e && e.message || e); }
-
-      setCors(res);
-      return res.status(200).json({ diag:true, info, execPath, execErr, payloadSummary:{
-        lines: Array.isArray(payload.lines) ? payload.lines.length : 0
-      }});
-    }
-    // ------------------------
-
-    const html = buildHTML(payload);
-    const pdfBuffer = await renderPDF(html);
-
-    const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
-    setCors(res);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=theseo-offerte-${today}.pdf`);
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(200).send(pdfBuffer);
-
-  }catch(e){
-    console.error('PDF error', e);
-    setCors(res);
-    // Geef altijd de volledige fouttekst terug voor curl/debug
-    return res.status(500).type('text/plain').send('PDF error: ' + (e?.stack || e?.message || String(e)));
-  }
-}
-
-/* ------- jouw HTML (ongewijzigd) ------- */
 function buildHTML(data){
-  const { contact = {}, totals = {}, lines = [] } = data;
+  const { contact = {}, totals = {}, lines = [] } = data || {};
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
-    .map(([l,r])=>`
+    .map(([l,r]) => `
       <tr>
         <td class="col-l">${escapeHtml(l||'')}</td>
         <td class="col-r">${escapeHtml(r||'')}</td>
@@ -107,10 +36,10 @@ function buildHTML(data){
   return `<!DOCTYPE html><html lang="nl"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Offerte – TheSEO</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 <style>
 :root{--bg:${bg};--text:#fff;--muted:#AFC3DE;--grid:${grid};--brand:${brand};--radius:16px;}
-*{box-sizing:border-box} html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+*{box-sizing:border-box} html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif}
 .page{width:794px;min-height:1123px;padding:36px 42px;position:relative;}
 header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
 .logo img{height:36px;width:auto;display:block;image-rendering:-webkit-optimize-contrast;}
@@ -164,15 +93,81 @@ table.spec{width:100%;border-collapse:separate;border-spacing:0;margin-top:18px;
 </section>
 </div></body></html>`;
 }
-function escapeHtml(s){
-  return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
+
+async function readJsonBody(req){
+  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length) return req.body;
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', c => { data += c; });
+    req.on('end', () => { try { resolve(JSON.parse(data||'{}')); } catch { resolve({}); } });
+    req.on('error', () => resolve({}));
+  });
+}
+
+export default async function handler(req, res){
+  try{
+    // CORS & preflight
+    if (req.method === 'OPTIONS'){
+      setCors(res);
+      return res.status(204).end();
+    }
+
+    // quick diag
+    if (req.method === 'GET' && req.query && req.query.diag){
+      setCors(res);
+      const hasExecFn = typeof chromium.executablePath === 'function';
+      let execPath = null, execErr = null;
+      try { execPath = hasExecFn ? await chromium.executablePath() : await chromium.executablePath; }
+      catch(e){ execErr = String(e?.message || e); }
+
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      return res.status(200).send(JSON.stringify({
+        diag:true,
+        info:{
+          node: process.version,
+          platform: process.platform,
+          arch: process.arch,
+          chromiumHeadless: chromium.headless ? 'new' : 'legacy',
+        },
+        execPath, execErr
+      }));
+    }
+
+    if (req.method !== 'POST'){
+      setCors(res);
+      return res.status(405).send('Method Not Allowed');
+    }
+
+    const body = await readJsonBody(req);
+    const { payload } = body || {};
+    if (!payload){
+      setCors(res);
+      return res.status(400).send('Bad Request: missing payload');
+    }
+
+    const html = buildHTML(payload);
+    const pdfBuffer = await renderPDF(html);
+
+    const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
+    setCors(res);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=theseo-offerte-${today}.pdf`);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).send(pdfBuffer);
+  }catch(e){
+    // If Chromium crashes, we surface the message so curl shows it.
+    setCors(res);
+    console.error('PDF error', e);
+    return res.status(500).send('PDF error: ' + (e?.message || String(e)));
+  }
 }
 
 async function renderPDF(html){
+  // harden Chromium boot for Vercel
   chromium.setHeadlessMode = true;
   chromium.setGraphicsMode = false;
 
-  const execPath = (typeof chromium.executablePath === 'function')
+  const execPath = typeof chromium.executablePath === 'function'
     ? await chromium.executablePath()
     : await chromium.executablePath;
 
@@ -183,9 +178,10 @@ async function renderPDF(html){
       ...chromium.args,
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage'
+      '--single-process',
+      '--font-render-hinting=medium'
     ],
-    defaultViewport: { width: 1123, height: 794, deviceScaleFactor: 2 },
+    defaultViewport: chromium.defaultViewport || { width: 1123, height: 794, deviceScaleFactor: 2 },
     executablePath: execPath,
     headless: chromium.headless
   });
@@ -193,9 +189,17 @@ async function renderPDF(html){
   try{
     const page = await browser.newPage();
     await page.emulateMediaType('screen');
-    const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
-    await page.goto(dataUrl, { waitUntil: ['load','networkidle0'] });
-    return await page.pdf({ format:'A4', printBackground:true, margin:{top:0,right:0,bottom:0,left:0}, preferCSSPageSize:true });
+
+    // No external fetches: setContent with DOM ready, tiny settle wait
+    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.waitForTimeout(200);
+
+    return await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      preferCSSPageSize: true,
+      margin: { top: 0, right: 0, bottom: 0, left: 0 }
+    });
   } finally {
     await browser.close();
   }
