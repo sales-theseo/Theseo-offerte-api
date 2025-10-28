@@ -48,6 +48,24 @@ export default async function handler(req, res){
     const execPath = await chromium.executablePath(); // BELANGRIJK: geen URL, gewoon autodetect
     console.log('[theseo] execPath', execPath);
 
+    // make sure chromium can find its shared libs (libnss3, etc.)
+process.env.LD_LIBRARY_PATH = [
+  process.env.LD_LIBRARY_PATH || '',
+  chromium.libPath            // <-- path bundled by @sparticuz/chromium
+].filter(Boolean).join(':');
+
+const browser = await puppeteer.launch({
+  args: [
+    ...chromium.args,
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--font-render-hinting=medium'
+  ],
+  defaultViewport: { width: 1123, height: 794, deviceScaleFactor: 2 },
+  executablePath: await chromium.executablePath(), // <-- call the fn
+  headless: chromium.headless
+});
+    
     // optionele flags voor lambda
     const browser = await puppeteer.launch({
       args: [
