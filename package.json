@@ -1,15 +1,15 @@
 {
-  "name": "theseo-offerte-api",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "engines": { "node": "20.x" },
-  "packageManager": "npm@10.8.1",
-  "scripts": {
-    "build": "echo \"no build\""
-  },
-  "dependencies": {
-    "@sparticuz/chromium": "131.0.1",
-    "puppeteer-core": "22.15.0"
-  }
+  "version": 2,
+  "builds": [
+    { "src": "api/**/*.js", "use": "@vercel/node" }
+  ],
+  "functions": {
+    "api/theseo-offerte.js": {
+      "memory": 1024,
+      "maxDuration": 20
+    }
+  ],
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/$1" }
+  ]
 }
