@@ -5,7 +5,7 @@ import fs from 'node:fs';
 
 export const config = { runtime: 'nodejs' };
 
-// ---- CORS
+/* ===== CORS ===== */
 function setCors(res){
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -13,7 +13,6 @@ function setCors(res){
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
 }
 
-// ---- Body
 function readJson(req){
   return new Promise(resolve=>{
     if (req.body && typeof req.body === 'object') return resolve(req.body);
@@ -32,8 +31,9 @@ export default async function handler(req, res){
     const { payload } = await readJson(req);
     if (!payload){ setCors(res); return res.status(400).send('Bad Request: missing payload'); }
 
-    // --- DIAG: /api/theseo-offerte?diag=1
-    if ((req.query && req.query.diag === '1') || (req.url && req.url.includes('diag=1'))){
+    // --- DIAG endpoints ---
+    const url = req.url || '';
+    if (url.includes('diag=1')){
       const execPath = await chromium.executablePath();
       setCors(res);
       return res.status(200).json({
@@ -47,37 +47,35 @@ export default async function handler(req, res){
         execPath
       });
     }
-
-    // --- DIAG: /api/theseo-offerte?diag=libs
-    if ((req.query && req.query.diag === 'libs') || (req.url && req.url.includes('diag=libs'))){
+    if (url.includes('diag=libs')){
       const execPath = await chromium.executablePath();
       const libPath  = chromium.libPath || '';
-      const ldBefore = process.env.LD_LIBRARY_PATH || '';
+      const exists   = libPath && fs.existsSync(libPath);
       let sample = null;
-      try { if (libPath && fs.existsSync(libPath)) sample = fs.readdirSync(libPath).slice(0, 50); } catch(_){}
+      try { if(exists) sample = fs.readdirSync(libPath).slice(0, 80); } catch(_){}
       setCors(res);
       return res.status(200).json({
         diag: 'libs',
         execPath,
         libPath,
-        ldLibraryPath: ldBefore,
-        libDirExists: !!(libPath && fs.existsSync(libPath)),
+        libDirExists: !!exists,
+        ldLibraryPath: process.env.LD_LIBRARY_PATH || '',
         sampleLibs: sample
       });
     }
 
-    // --- Kritiek: libs zichtbaar maken (voor libnss3.so e.d.)
-    // Sparticuz levert de .so’s mee in chromium.libPath; voeg die toe aan het zoekpad:
+    // ===== Kritiek: zorg dat Chromium z'n .so-libs kan vinden =====
+    // Sparticuz bundelt libnss3.so etc. in chromium.libPath → voeg toe aan search path
     const libPath = chromium.libPath || '';
-    process.env.LD_LIBRARY_PATH = [ process.env.LD_LIBRARY_PATH || '', libPath ]
-      .filter(Boolean).join(':');
+    process.env.LD_LIBRARY_PATH = [process.env.LD_LIBRARY_PATH || '', libPath].filter(Boolean).join(':');
 
-    // Aanrader volgens Sparticuz:
+    // extra aanraders
     chromium.setHeadlessMode = true;
     chromium.setGraphicsMode = false;
+    process.env.FONTCONFIG_PATH = chromium.fonts || process.env.FONTCONFIG_PATH || '';
 
-    // Launch
     const execPath = await chromium.executablePath();
+
     const browser = await puppeteer.launch({
       args: [
         ...chromium.args,
@@ -91,6 +89,7 @@ export default async function handler(req, res){
     });
 
     const html = buildHTML(payload);
+
     const page = await browser.newPage();
     await page.emulateMediaType('screen');
     await page.setContent(html, { waitUntil: ['domcontentloaded','networkidle0'] });
@@ -104,14 +103,14 @@ export default async function handler(req, res){
 
     await browser.close();
 
-    const today = new Date().toLocaleDateString('nl-NL').replace(/\//g, '-');
+    const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
     setCors(res);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=theseo-offerte-${today}.pdf`);
     res.setHeader('Cache-Control', 'no-store');
     return res.status(200).send(pdf);
 
-  } catch (e){
+  }catch(e){
     console.error('[theseo] FATAL', e && (e.stack || e));
     setCors(res);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -119,7 +118,7 @@ export default async function handler(req, res){
   }
 }
 
-/* ---- HTML (zoals je had) ---- */
+/* ===== HTML ===== */
 function buildHTML(data){
   const { contact = {}, totals = {}, lines = [] } = data;
   const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
