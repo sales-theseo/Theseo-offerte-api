@@ -1,106 +1,67 @@
-// api/theseo-offerte.js
 import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
-import fs from 'node:fs';
 
 export const config = { runtime: 'nodejs' };
 
-/* ===== CORS ===== */
 function setCors(res){
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
 }
-
 function readJson(req){
   return new Promise(resolve=>{
     if (req.body && typeof req.body === 'object') return resolve(req.body);
-    let data = ''; req.on('data', c => data += c);
-    req.on('end', ()=>{ try{ resolve(JSON.parse(data||'{}')); } catch{ resolve({}); }});
-    req.on('error', ()=> resolve({}));
+    let d=''; req.on('data',c=>d+=c);
+    req.on('end',()=>{ try{ resolve(JSON.parse(d||'{}')); } catch{ resolve({}); }});
+    req.on('error',()=>resolve({}));
   });
 }
 
-export default async function handler(req, res){
+export default async function handler(req,res){
   const t0 = Date.now();
   try{
-    if (req.method === 'OPTIONS'){ setCors(res); return res.status(204).end(); }
-    if (req.method !== 'POST'){ setCors(res); return res.status(405).send('Method Not Allowed'); }
+    if(req.method==='OPTIONS'){ setCors(res); return res.status(204).end(); }
+    if(req.method!=='POST'){ setCors(res); return res.status(405).send('Method Not Allowed'); }
 
     const { payload } = await readJson(req);
-    if (!payload){ setCors(res); return res.status(400).send('Bad Request: missing payload'); }
+    if(!payload){ setCors(res); return res.status(400).send('Bad Request: missing payload'); }
 
-    // --- DIAG endpoints ---
-    const url = req.url || '';
-    if (url.includes('diag=1')){
-      const execPath = await chromium.executablePath();
+    // diag: ?diag=1
+    if((req.url||'').includes('diag=1')){
       setCors(res);
       return res.status(200).json({
-        diag: true,
-        info: {
-          node: process.version,
-          platform: process.platform,
-          arch: process.arch,
-          chromiumHeadless: chromium.headless ? 'new' : 'old'
-        },
-        execPath
-      });
-    }
-    if (url.includes('diag=libs')){
-      const execPath = await chromium.executablePath();
-      const libPath  = chromium.libPath || '';
-      const exists   = libPath && fs.existsSync(libPath);
-      let sample = null;
-      try { if(exists) sample = fs.readdirSync(libPath).slice(0, 80); } catch(_){}
-      setCors(res);
-      return res.status(200).json({
-        diag: 'libs',
-        execPath,
-        libPath,
-        libDirExists: !!exists,
-        ldLibraryPath: process.env.LD_LIBRARY_PATH || '',
-        sampleLibs: sample
+        diag:true,
+        info:{ node:process.version, platform:process.platform, arch:process.arch,
+               chromiumHeadless: chromium.headless ? 'new':'old' },
+        execPath: await chromium.executablePath()
       });
     }
 
-    // ===== Kritiek: zorg dat Chromium z'n .so-libs kan vinden =====
-    // Sparticuz bundelt libnss3.so etc. in chromium.libPath → voeg toe aan search path
-    const libPath = chromium.libPath || '';
-    process.env.LD_LIBRARY_PATH = [process.env.LD_LIBRARY_PATH || '', libPath].filter(Boolean).join(':');
-
-    // extra aanraders
+    // Sparticuz: geen extra LIB paden zetten; binary is self-contained.
     chromium.setHeadlessMode = true;
     chromium.setGraphicsMode = false;
-    process.env.FONTCONFIG_PATH = chromium.fonts || process.env.FONTCONFIG_PATH || '';
-
-    const execPath = await chromium.executablePath();
 
     const browser = await puppeteer.launch({
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
       args: [
         ...chromium.args,
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--font-render-hinting=medium'
       ],
-      executablePath: execPath,
-      headless: chromium.headless,
       defaultViewport: { width: 1123, height: 794, deviceScaleFactor: 2 }
     });
 
     const html = buildHTML(payload);
-
     const page = await browser.newPage();
     await page.emulateMediaType('screen');
     await page.setContent(html, { waitUntil: ['domcontentloaded','networkidle0'] });
-
     const pdf = await page.pdf({
-      format: 'A4',
-      printBackground: true,
-      margin: { top: 0, right: 0, bottom: 0, left: 0 },
-      preferCSSPageSize: true
+      format:'A4', printBackground:true, preferCSSPageSize:true,
+      margin:{ top:0, right:0, bottom:0, left:0 }
     });
-
     await browser.close();
 
     const today = new Date().toLocaleDateString('nl-NL').replace(/\//g,'-');
@@ -111,72 +72,55 @@ export default async function handler(req, res){
     return res.status(200).send(pdf);
 
   }catch(e){
-    console.error('[theseo] FATAL', e && (e.stack || e));
+    console.error('[theseo] FATAL', e?.stack || e);
     setCors(res);
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Type','text/plain; charset=utf-8');
     return res.status(500).send('PDF error: ' + (e?.message || String(e)));
   }
 }
 
-/* ===== HTML ===== */
+/* --- HTML --- */
 function buildHTML(data){
-  const { contact = {}, totals = {}, lines = [] } = data;
-  const rows = (lines.length ? lines : [['(geen regels geselecteerd)','']])
-    .map(([l,r])=>`
-      <tr>
-        <td class="col-l">${escapeHtml(l||'')}</td>
-        <td class="col-r">${escapeHtml(r||'')}</td>
-      </tr>`).join('');
-
-  const logo = "https://ek68sppdjsi.exactdn.com/wp-content/uploads/2025/06/THESEAO_LOGO_FIXED-1024x552.png?strip=all&lossy=1&sharp=1&ssl=1";
-  const bg   = "#080A0E";
-  const grid = "#2D3750";
-  const brand= "#1652F0";
-  const today= new Date().toLocaleDateString('nl-NL');
-
-  return `
-<!DOCTYPE html><html lang="nl"><head>
-<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+  const { contact={}, totals={}, lines=[] } = data;
+  const rows = (lines.length?lines:[['(geen regels geselecteerd)','']])
+    .map(([l,r])=>`<tr><td class="col-l">${esc(l||'')}</td><td class="col-r">${esc(r||'')}</td></tr>`).join('');
+  const logo="https://ek68sppdjsi.exactdn.com/wp-content/uploads/2025/06/THESEAO_LOGO_FIXED-1024x552.png?strip=all&lossy=1&sharp=1&ssl=1";
+  const today=new Date().toLocaleDateString('nl-NL');
+  return `<!doctype html><html lang="nl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Offerte – TheSEO</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 <style>
-:root{--bg:${bg};--text:#fff;--muted:#AFC3DE;--grid:${grid};--brand:${brand};--radius:16px;}
-*{box-sizing:border-box} html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+:root{--bg:#080A0E;--text:#fff;--muted:#AFC3DE;--grid:#2D3750;--brand:#1652F0;--radius:16px;}
+*{box-sizing:border-box} html,body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
 .page{width:794px;min-height:1123px;padding:36px 42px;position:relative;}
 header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
-.logo img{height:36px;width:auto;display:block;image-rendering:-webkit-optimize-contrast;}
+.logo img{height:36px;display:block}
 .pill{border:1px solid rgba(255,255,255,.9);border-radius:999px;padding:8px 16px;font-weight:800;letter-spacing:.6px;}
 .date{margin-top:6px;font-size:12px;color:#EAF0FF}
-.card{border-radius:var(--radius);background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.28);padding:16px 18px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.06);}
+.card{border-radius:var(--radius);background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.28);padding:16px 18px;}
 .contact{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px}
 .contact small{display:block;color:var(--muted);text-transform:uppercase;font-weight:800;letter-spacing:.4px;margin-bottom:4px;font-size:11px}
-.contact strong{color:#fff;}
 table.spec{width:100%;border-collapse:separate;border-spacing:0;margin-top:18px;font-size:13px;overflow:hidden;border-radius:var(--radius);border:1px solid var(--grid);}
-.spec thead th{background:var(--brand);color:#fff;text-align:left;padding:12px 14px;font-weight:800;letter-spacing:.2px;}
+.spec thead th{background:var(--brand);color:#fff;text-align:left;padding:12px 14px;font-weight:800;}
 .spec td{padding:11px 14px;border-top:1px solid var(--grid);}
-.spec td.col-l{width:auto}
-.spec td.col-r{width:160px;text-align:right}
+.spec td.col-r{text-align:right;width:160px}
 .spec tr:nth-child(odd) td{background:rgba(255,255,255,0.03)}
 .spec tr td + td{border-left:1px solid var(--grid)}
 .totals{margin-top:18px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
 .chip{border-radius:var(--radius);background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.28);padding:14px 16px;}
 .chip small{display:block;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:800;margin-bottom:6px;font-size:11px}
-.chip strong{font-size:16px;color:#fff;}
-.footer{margin-top:22px;}
-.brand-note{border-radius:var(--radius);background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.28);padding:14px 16px;display:flex;justify-content:space-between;align-items:center;}
-.fine{margin-top:10px;font-size:11px;color:var(--muted)}
-@page{size:A4;margin:0;} @media print {.page{width:auto;min-height:auto;padding:28px 32px;}}
-</style></head>
-<body><div class="page">
+@page{size:A4;margin:0;}
+</style></head><body><div class="page">
 <header><div class="logo"><img src="${logo}" alt="theseo"></div><div class="pill">OFFERTE</div></header>
 <div class="date">datum ${today}</div>
 <section class="card" style="margin-top:12px;">
   <div style="font-weight:800;letter-spacing:.3px;margin-bottom:6px;">theseo</div>
   <div class="contact">
-    <div><small>voornaam</small><strong>${escapeHtml(contact.firstName||'-')}</strong></div>
-    <div><small>achternaam</small><strong>${escapeHtml(contact.lastName||'-')}</strong></div>
-    <div><small>bedrijfsnaam</small><strong>${escapeHtml(contact.company||'-')}</strong></div>
-    <div><small>email</small><strong>${escapeHtml(contact.email||'-')}</strong></div>
+    <div><small>voornaam</small><strong>${esc(contact.firstName||'-')}</strong></div>
+    <div><small>achternaam</small><strong>${esc(contact.lastName||'-')}</strong></div>
+    <div><small>bedrijfsnaam</small><strong>${esc(contact.company||'-')}</strong></div>
+    <div><small>email</small><strong>${esc(contact.email||'-')}</strong></div>
   </div>
 </section>
 <section style="margin-top:14px;">
@@ -184,18 +128,10 @@ table.spec{width:100%;border-collapse:separate;border-spacing:0;margin-top:18px;
   <tbody>${rows}</tbody></table>
 </section>
 <section class="totals">
-  <div class="chip"><small>maandelijks</small><strong>${escapeHtml(totals.monthly||'€0')}</strong></div>
-  <div class="chip"><small>eenmalig</small><strong>${escapeHtml(totals.onetime||'€0')}</strong></div>
-  <div class="chip"><small>totaal eerste maand</small><strong>${escapeHtml(totals.grand||'€0')}</strong></div>
-</section>
-<section class="footer">
-  <div class="brand-note"><div style="font-weight:800">Vragen? Neem contact op.</div>
-  <div style="font-size:12px;color:#EAF0FF">E-mail: sales@theseo.nl · Web: theseo.nl</div></div>
-  <div class="fine">alle bedragen exclusief btw. indicatie op basis van de geselecteerde opties</div>
+  <div class="chip"><small>maandelijks</small><strong>${esc(totals.monthly||'€0')}</strong></div>
+  <div class="chip"><small>eenmalig</small><strong>${esc(totals.onetime||'€0')}</strong></div>
+  <div class="chip"><small>totaal eerste maand</small><strong>${esc(totals.grand||'€0')}</strong></div>
 </section>
 </div></body></html>`;
 }
-
-function escapeHtml(s){
-  return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
-}
+function esc(s){ return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m])); }
